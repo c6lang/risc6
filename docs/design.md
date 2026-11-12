@@ -228,8 +228,10 @@ ELF32 / little-endian / `ET_EXEC` / `e_machine = 243 (EM_RISCV)` / 无 `PT_INTER
    而本程序的 IR 只要「整数 + 数组 + 函数」；同时与 c6LOS 内核核心的禁令一致。
    注意后端已知缺口：**闭包间接调用会崩**、**9–16 字节结构体返回三后端 ABI 不一致**，
    这两类构造一律不写。
-4. **不用 `long`/`size_t`/指针做算术**：guest 地址一律 `u32` 偏移。c6 前端是 LP64，
-   `long` 在 IR 里 64 位、wasm32 上 32 位——正是 c6LOS `docs/architecture.md §3` 的坑。
+4. **不用 `long`/`size_t`/指针做算术**：guest 地址一律 `u32` 偏移。c6 前端曾经是
+   LP64（`--target=wasm32` 下 `sizeof(long)` 也是 8）——正是 c6LOS
+   `docs/architecture.md §3` 的坑；c6 现在按 triple 取宽度（wasm32 上 4），但
+   这条规矩保留：两个后端共用同一份源码、且 `u32` 偏移本来就更贴近 guest 地址模型。
 5. **错误用返回码**，不用 `err`/`try`（避免 `__c6_err_*` 运行时符号）。
 6. **全局状态 + 静态数组**，不 `malloc`（wasm 侧只有 4 MiB 静态池，且我们要确定性）。
 
