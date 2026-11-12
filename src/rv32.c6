@@ -24,31 +24,21 @@ u64 risc6_stat_insns = 0;
 u32 risc6_stat[RISC6_STAT_N] = {0};
 
 /* ---------- 机器状态 ---------- */
-u32 g_x[32] = {0};
-u32 g_pc = 0;
+Risc6Hart g_harts[RISC6_MAX_HARTS] = {0};
+u32 g_cur = 0;
+u32 g_nharts = 1;
 u32 g_base = 0;        /* guest 窗起点（guest 地址） */
 u32 g_size = 0;        /* guest 窗大小 */
 u32 g_brk = 0;
 u32 g_brk_max = 0;
 u64 g_insns = 0;
 u64 g_limit = 0ull;   /* 0 = 用 RISC6_MAX_INSNS 默认预算（§4） */
-u64 g_next_event = 0;
 u32 g_trace = 0;
 u32 g_stop = 0;
 u32 g_rc = 0;
 u32 g_mode = 0;        /* 0 = user, 1 = bare */
-u32 g_reserved = 0;    /* lr.w 保留地址 + 1；0 = 无 */
 u32 g_in_len = 0;
 
-/* CSR */
-u32 g_mstatus = 0;
-u32 g_mie = 0;
-u32 g_mip = 0;
-u32 g_mtvec = 0;
-u32 g_mepc = 0;
-u32 g_mcause = 0;
-u32 g_mtval = 0;
-u32 g_mscratch = 0;
 
 /* ENOSYS 记录（每个号只报一次） */
 u32 g_unknown[16] = {0};
@@ -320,7 +310,7 @@ static u32 csr_read(u32 csr) {
         return g_mip;
     }
     if (csr == 0xF14u) {
-        return 0u;
+        return g_cur;
     }
     return 0u;
 }
@@ -985,31 +975,36 @@ static void step(void) {
 
 void risc6_cpu_reset(void) {
     u32 i = 0;
+    u32 h = 0;
 
-    i = 0;
-    while (i < 32u) {
-        g_x[i] = 0u;
-        i++;
+    while (h < RISC6_MAX_HARTS) {
+        i = 0;
+        while (i < 32u) {
+            g_harts[h].x[i] = 0u;
+            i++;
+        }
+        g_harts[h].pc = 0u;
+        g_harts[h].mstatus = 0u;
+        g_harts[h].mie = 0u;
+        g_harts[h].mip = 0u;
+        g_harts[h].mtvec = 0u;
+        g_harts[h].mepc = 0u;
+        g_harts[h].mcause = 0u;
+        g_harts[h].mtval = 0u;
+        g_harts[h].mscratch = 0u;
+        g_harts[h].reserved = 0u;
+        g_harts[h].next_event = (u64)RISC6_SLICE;
+        h++;
     }
-    g_pc = 0u;
+    g_cur = 0u;
     g_base = 0u;
     g_size = 0u;
     g_brk = 0u;
     g_brk_max = 0u;
     g_insns = 0ull;
-    g_next_event = (u64)RISC6_SLICE;
     g_stop = 0u;
     g_rc = 0u;
-    g_reserved = 0u;
     g_mode = 0u;
-    g_mstatus = 0u;
-    g_mie = 0u;
-    g_mip = 0u;
-    g_mtvec = 0u;
-    g_mepc = 0u;
-    g_mcause = 0u;
-    g_mtval = 0u;
-    g_mscratch = 0u;
     g_unknown_n = 0u;
     risc6_out_len = 0u;
     risc6_diag_len = 0u;
@@ -1018,23 +1013,52 @@ void risc6_cpu_reset(void) {
 }
 
 void risc6_cpu_run(void) {
-    while (g_stop == 0u) {
-        if (g_insns >= g_limit) {
-            risc6_diag_str("\nrisc6: instruction budget exhausted (limit=");
-            risc6_diag_dec(g_limit);
-            risc6_diag_str(") pc=0x");
-            risc6_diag_hex(g_pc);
-            risc6_diag_str("\n");
-            g_rc = RISC6_RC_BUDGET;
-            break;
-        }
-        if (g_mode == 1u && g_insns >= g_next_event) {
-            tick_event();
-            continue;
-        }
-        step();
-        g_insns = g_insns + 1ull;
+    u32 n = g_nharts;
+    if (n == 0u) {
+        n = 1u;
     }
+    if (n > RISC6_MAX_HARTS) {
+        n = RISC6_MAX_HARTS;
+    }
+    while (g_stop == 0u) {
+        u32 h = 0;
+        while (h < n && g_stop == 0u) {
+            u64 qend = 0ull;
+            g_cur = h;
+            qend = g_insns + 2000ull;
+            while (g_stop == 0u && g_insns < qend) {
+                if (g_insns >= g_limit) {
+                    risc6_diag_str("\nrisc6: instruction budget exhausted (limit=");
+                    risc6_diag_dec(g_limit);
+                    risc6_diag_str(") hart=");
+                    risc6_diag_dec((u64)g_cur);
+                    risc6_diag_str(" pc=0x");
+                    risc6_diag_hex(g_pc);
+                    risc6_diag_str("\n");
+                    g_rc = RISC6_RC_BUDGET;
+                    g_stop = 1u;
+                    break;
+                }
+                if (g_mode == 1u && g_insns >= g_next_event) {
+                    tick_event();
+                    continue;
+                }
+                step();
+                g_insns = g_insns + 1ull;
+            }
+            h++;
+        }
+    }
+}
+
+void risc6_set_harts(u32 n) {
+    if (n == 0u) {
+        n = 1u;
+    }
+    if (n > RISC6_MAX_HARTS) {
+        n = RISC6_MAX_HARTS;
+    }
+    g_nharts = n;
 }
 
 /* 入口：复位 → 装载 → 主循环（循环在本 TU，每条指令不跨 TU） */

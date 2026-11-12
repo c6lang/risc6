@@ -19,6 +19,7 @@ static int usage(void)
             "  --time        print wall time and instructions/second\n"
             "  --stats       print coverage counters\n"
             "  --bare        bare mode (no syscalls, mtvec/mret traps, MTIP)\n"
+            "  --harts N     number of harts (default 1, max 4)\n"
             "  --version     print version and exit\n",
             (unsigned long long)RISC6_MAX_INSNS);
     return 2;
@@ -33,6 +34,7 @@ int main(int argc, char **argv)
     int want_time = 0;
     int want_stats = 0;
     int bare = 0;
+    u32 harts = 1;
     double t0 = 0.0, t1 = 0.0;
     FILE *f = NULL;
     size_t n = 0;
@@ -53,6 +55,8 @@ int main(int argc, char **argv)
             want_stats = 1;
         } else if (strcmp(a, "--bare") == 0) {
             bare = 1;
+        } else if (strcmp(a, "--harts") == 0 && i + 1 < argc) {
+            harts = (u32)strtoul(argv[++i], NULL, 0);
         } else if (strcmp(a, "--version") == 0) {
             printf("risc6 " RISC6_VERSION "\n");
             return 0;
@@ -87,6 +91,7 @@ int main(int argc, char **argv)
 
     risc6_set_limit(limit);
     risc6_set_trace((u32)trace);
+    risc6_set_harts(harts);
     if (bare) {
         risc6_set_mode(1u);
     }

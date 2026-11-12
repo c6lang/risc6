@@ -338,16 +338,36 @@ static u32 load_elf(u32 len) {
         }
     }
 
-    g_x[0] = 0u;
-    g_x[2] = (stack_top - 16u) & 0xFFFFFFF0u;
-    g_x[3] = gp;
-    g_x[10] = 0u;
-    g_x[11] = 0u;
-    g_pc = entry;
+    {
+        u32 h = 0;
+        while (h < g_nharts) {
+            g_cur = h;
+            g_x[0] = 0u;
+            g_x[2] = (stack_top - 16u - h * 0x10000u) & 0xFFFFFFF0u;
+            g_x[3] = gp;
+            g_x[10] = 0u;
+            g_x[11] = 0u;
+            g_pc = entry;
+            g_mstatus = 0u;
+            g_mie = 0u;
+            g_mip = 0u;
+            g_mtvec = 0u;
+            g_mepc = 0u;
+            g_mcause = 0u;
+            g_mtval = 0u;
+            g_mscratch = 0u;
+            g_reserved = 0u;
+            g_next_event = (u64)RISC6_SLICE;
+            h++;
+        }
+        g_cur = 0u;
+    }
     g_brk = (hi + 3u) & 0xFFFFFFFCu;
     g_brk_max = (g_base + g_size) - 4096u;
     if (g_trace != 0u) {
-        risc6_diag_str("risc6: base=0x");
+        risc6_diag_str("risc6: harts=");
+        risc6_diag_dec((u64)g_nharts);
+        risc6_diag_str(" base=0x");
         risc6_diag_hex(g_base);
         risc6_diag_str(" size=0x");
         risc6_diag_hex(g_size);

@@ -1,12 +1,12 @@
 #!/usr/bin/env node
 /* risc6 wasm32 运行器：把 RV32 ELF 喂给 build/risc6.wasm，打印 guest 输出。
- * 用法: node tools/run-wasm.mjs build/risc6.wasm <file.elf> [--limit N] [--quiet] [--time] [--stats] [--bare] [--version] */
+ * 用法: node tools/run-wasm.mjs build/risc6.wasm <file.elf> [--limit N] [--quiet] [--time] [--stats] [--bare] [--harts N] [--version] */
 
 import { readFileSync } from 'node:fs';
 
 const argv = process.argv.slice(2);
 if (argv.length < 2) {
-  console.error('usage: node tools/run-wasm.mjs <risc6.wasm> <file.elf> [--limit N] [--quiet] [--time] [--stats] [--bare] [--version]');
+  console.error('usage: node tools/run-wasm.mjs <risc6.wasm> <file.elf> [--limit N] [--quiet] [--time] [--stats] [--bare] [--harts N] [--version]');
   process.exit(2);
 }
 
@@ -17,6 +17,7 @@ let quiet = false;
 let wantTime = false;
 let wantStats = false;
 let bare = false;
+let harts = 1n;
 let wantVersion = false;
 for (let i = 1; i < argv.length; i++) {
   const a = argv[i];
@@ -25,6 +26,7 @@ for (let i = 1; i < argv.length; i++) {
   else if (a === '--time') wantTime = true;
   else if (a === '--stats') wantStats = true;
   else if (a === '--bare') bare = true;
+  else if (a === '--harts' && i + 1 < argv.length) harts = BigInt(argv[++i]);
   else if (a === '--version') wantVersion = true;
   else if (a.startsWith('-')) { console.error(`risc6: unknown option ${a}`); process.exit(2); }
   else if (elfPath === null) elfPath = a;
@@ -62,7 +64,8 @@ if (elf.length === 0) {
   process.exit(200);
 }
 if (limit !== null) ex.wx_set_limit(limit);
-if (bare) ex.wx_set_mode(1n);
+if (bare) ex.wx_set_mode(1);
+ex.wx_set_harts(Number(harts));
 
 const inAddr = Number(ex.wx_in_addr());
 mem().set(elf, inAddr);

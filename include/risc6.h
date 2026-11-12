@@ -9,7 +9,7 @@
  */
 
 /* 版本号：发布 tag vX.Y.Z 与此处同步（CHANGELOG.md 有对应条目） */
-#define RISC6_VERSION "0.1.0"
+#define RISC6_VERSION "0.2.0"
 
 typedef unsigned char      u8;
 typedef unsigned short     u16;
@@ -29,6 +29,7 @@ typedef signed long long   i64;
 #define RISC6_TIME_SCALE 64u                    /* time = 指令数 × 64 */
 #define RISC6_SLICE      50000u                 /* bare 模式中断注入切片 */
 #define RISC6_MAX_INSNS  2000000000ull          /* 默认指令预算 */
+#define RISC6_MAX_HARTS  4u                     /* 最多模拟 4 个 hart */
 
 /* MMIO：bare 模式没有系统调用，guest 用这两条写来输出/退出（§5.3） */
 #define RISC6_MMIO_BASE    0x40000000u
@@ -71,6 +72,7 @@ extern u32 risc6_stat[RISC6_STAT_N];    /* 覆盖率统计（宿主读） */
 /* ---- 入口：c6 定义、宿主调用 ---- */
 int  risc6_run(u32 in_len);
 void risc6_set_limit(u64 max_insns);
+void risc6_set_harts(u32 n);
 void risc6_set_trace(u32 on);
 void risc6_set_mode(u32 bare);          /* 0 = user（默认），1 = bare */
 

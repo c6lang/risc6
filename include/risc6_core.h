@@ -13,31 +13,52 @@
 
 #include "risc6.h"
 
-/* ---- 机器状态（定义在 src/rv32.c6） ---- */
-extern u32 g_x[32];
-extern u32 g_pc;
+/* ---- 每 hart 状态（定义在 src/rv32.c6） ---- */
+typedef struct {
+    u32 x[32];
+    u32 pc;
+    u32 mstatus;
+    u32 mie;
+    u32 mip;
+    u32 mtvec;
+    u32 mepc;
+    u32 mcause;
+    u32 mtval;
+    u32 mscratch;
+    u32 reserved;
+    u64 next_event;
+} Risc6Hart;
+
+extern Risc6Hart g_harts[RISC6_MAX_HARTS];
+extern u32 g_cur;
+extern u32 g_nharts;
+
+#define g_x        (g_harts[g_cur].x)
+#define g_pc       (g_harts[g_cur].pc)
+#define g_mstatus  (g_harts[g_cur].mstatus)
+#define g_mie      (g_harts[g_cur].mie)
+#define g_mip      (g_harts[g_cur].mip)
+#define g_mtvec    (g_harts[g_cur].mtvec)
+#define g_mepc     (g_harts[g_cur].mepc)
+#define g_mcause   (g_harts[g_cur].mcause)
+#define g_mtval    (g_harts[g_cur].mtval)
+#define g_mscratch (g_harts[g_cur].mscratch)
+#define g_reserved (g_harts[g_cur].reserved)
+#define g_next_event (g_harts[g_cur].next_event)
+
+/* ---- 全局共享状态 ---- */
 extern u32 g_base;
 extern u32 g_size;
 extern u32 g_brk;
 extern u32 g_brk_max;
 extern u64 g_insns;
 extern u64 g_limit;
-extern u64 g_next_event;
 extern u32 g_trace;
 extern u32 g_stop;
 extern u32 g_rc;
 extern u32 g_mode;
-extern u32 g_reserved;
 extern u32 g_in_len;
 
-extern u32 g_mstatus;
-extern u32 g_mie;
-extern u32 g_mip;
-extern u32 g_mtvec;
-extern u32 g_mepc;
-extern u32 g_mcause;
-extern u32 g_mtval;
-extern u32 g_mscratch;
 
 extern u32 g_unknown[16];
 extern u32 g_unknown_n;

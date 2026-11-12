@@ -16,6 +16,7 @@ void wx_set_mode(unsigned long bare);
 const char *wx_version(void);
 unsigned long wx_insns_hi(void);
 void wx_set_limit(unsigned long long n);
+void wx_set_harts(unsigned long n);
 
 unsigned long wx_in_addr(void)
 {
@@ -76,4 +77,9 @@ void wx_set_mode(unsigned long bare)
 void wx_set_limit(unsigned long long n)
 {
     risc6_set_limit((u64)n);
+}
+
+void wx_set_harts(unsigned long n)
+{
+    risc6_set_harts((u32)n);
 }

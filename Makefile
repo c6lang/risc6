@@ -24,7 +24,7 @@ WASMFLAGS := --target=wasm32-unknown-unknown -O2 -ffreestanding -Iinclude
 TESTS   := t_hello t_isa t_mem t_atomic
 TESTBIN := $(addprefix $(BUILD)/tests/,$(TESTS))
 
-.PHONY: all wasm check selfcheck bare clean run run-wasm stats dirs
+.PHONY: all wasm check selfcheck bare harts clean run run-wasm stats dirs
 
 all: $(BUILD)/risc6
 wasm: $(BUILD)/risc6.wasm
@@ -71,7 +71,7 @@ $(BUILD)/risc6.wasm: $(BUILD)/wasm/rv32.o $(BUILD)/wasm/sys.o $(BUILD)/wasm/host
 		--export=wx_run --export=wx_in_addr --export=wx_out_addr \
 		--export=wx_out_len --export=wx_diag_addr --export=wx_diag_len \
 		--export=wx_insns_lo --export=wx_insns_hi --export=wx_set_limit \
-		--export=wx_stat_addr --export=wx_set_mode --export=wx_version \
+		--export=wx_stat_addr --export=wx_set_mode --export=wx_set_harts --export=wx_version \
 		--export-memory --initial-memory=16777216 \
 		-o $@ $(BUILD)/wasm/rv32.o $(BUILD)/wasm/sys.o $(BUILD)/wasm/host.o
 
@@ -97,11 +97,20 @@ check: $(BUILD)/risc6 $(TESTBIN)
 $(BUILD)/tests/t_bare: tests/t_bare.c tests/bare_start.S tests/bare_trap.S | dirs
 	$(CC) $(RVFLAGS) -o $@ tests/bare_start.S tests/bare_trap.S tests/t_bare.c
 
+$(BUILD)/tests/t_harts: tests/t_harts.c tests/bare_start.S | dirs
+	$(CC) $(RVFLAGS) -o $@ tests/bare_start.S tests/t_harts.c
+
 bare: $(BUILD)/risc6 wasm $(BUILD)/tests/t_bare
 	@echo "== bare native（靠 ELF 里的 .risc6_bare 标记切模式）"
 	@$(BUILD)/risc6 $(BUILD)/tests/t_bare || true
 	@echo "== bare wasm"
 	@node tools/run-wasm.mjs $(BUILD)/risc6.wasm $(BUILD)/tests/t_bare || true
+
+harts: $(BUILD)/risc6 wasm $(BUILD)/tests/t_harts
+	@echo "== two harts native"
+	@$(BUILD)/risc6 --bare --harts 2 $(BUILD)/tests/t_harts
+	@echo "== two harts wasm"
+	@node tools/run-wasm.mjs $(BUILD)/risc6.wasm $(BUILD)/tests/t_harts --bare --harts 2
 
 selfcheck: $(BUILD)/risc6 wasm $(TESTBIN)
 	@sh tools/selfcheck.sh $(BUILD)/tests/t_hello

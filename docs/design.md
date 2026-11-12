@@ -128,6 +128,17 @@ risc6 补的正是 L2 的两个缺口：
 
 ---
 
+### 3.6 多 hart（0.2.0）
+
+- 每 hart 一份 `Risc6Hart`：`x[32]`、`pc`、`mstatus/mie/mip/mtvec/mepc/mcause/mtval/mscratch`、
+  `reserved`（lr/sc）与 `next_event`（MTIP 切片）。
+- 共享：guest 内存窗、`g_insns` 预算、控制台/诊断、MMIO、退出标志。
+- 调度：主循环按 `2000` 条指令切片在 hart 间轮转；每个 hart 到点注入自己的 MTIP，
+  `mhartid` 返回当前 hart。栈按 hart 间隔 64 KiB。
+- 语义边界：这是**确定性交错多 hart**，不是 cache 一致性/弱内存模型模拟；`lr/sc`
+  保留地址按 hart 独立，`amo*` 对共享内存的读改写是单指令原子（模拟器单线程执行）。
+- 入口：`risc6 --harts N <elf>` 与 `node tools/run-wasm.mjs ... --harts N`，N=1–4。
+
 ## 4. 时间、预算与确定性
 
 - **指令预算**：`risc6_set_limit(u64)`，默认 `2e9`。耗尽 → 退出码 201 + 诊断行

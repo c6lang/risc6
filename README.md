@@ -35,6 +35,7 @@ build/risc6 /path/to/c6os/build/rv32/hello
 |---|---|
 | ISA | RV32I + M + A + C + Zicsr（子集）+ Zifencei + Zicntr |
 | 运行模式 | **user**（Linux 静态 ELF，`write`/`exit`/`brk`/`read`/`close`）；**bare**（陷阱 + 中断注入，E5） |
+| 多 hart | `--harts N`（1–4）：每 hart 独立寄存器/CSR/MTIP 切片，共享内存与 MMIO；native 与 wasm 同指令数 |
 | 时间 | `time/cycle/instret = 指令数 × 64`，确定性、可复现 |
 | 内存 | 单块 8 MiB 平坦窗（ELF 段 + 1 MiB 栈）；无 MMU/cache |
 | 不支持 | F/D 浮点、向量、B 扩展、S/U 态、多核、外设模型 |
@@ -64,7 +65,7 @@ docs/               设计文档 + 任务板
 
 ## 状态
 
-**E0–E6 已完成**（E6-3 浏览器演示为可选项，见 `docs/todo.md`）。核心已是两个 TU。
+**E0–E7 已完成**（E7 多 hart）（E6-3 浏览器演示为可选项，见 `docs/todo.md`）。核心已是两个 TU。
 
 实测（本机 clang 19.1.4 / node v24.13.1 / c6 @ `~/c6`）：
 
@@ -73,6 +74,7 @@ docs/               设计文档 + 任务板
 | `make check`（native + wasm + qemu 三方对拍） | 4 用例全一致 |
 | `make selfcheck`（预算/装载错误码等自检） | 8 项全通过 |
 | `make bare`（bare 模式陷阱/抢占） | 16 次 MTIP 注入，寄存器帧完好，比 native 与 wasm 逐字节相同 |
+| `make harts`（双 hart） | native/wasm 均 `PASS: two harts`，4078 条指令一致 |
 | c6LOS `rv32/{hello,sched,tick}` | 输出与 `qemu-riscv32` 逐字节一致（1776 / 35854 / 1594931 条指令） |
 | 性能 native | ~44 Minsn/s（单 TU 时 47.5） |
 | 性能 wasm（node） | ~35 Minsn/s |
