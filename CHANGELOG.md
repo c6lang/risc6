@@ -2,6 +2,15 @@
 
 格式：Keep a Changelog 风格；版本号遵循语义化版本，发布 tag 为 `vX.Y.Z`。
 
+## [未发布]
+
+### 修复
+
+- 不再需要 `tools/ll-zero.py`：c6 的 LLVM 后端现在把数据段里的长全零段（≥32 字节）
+  切成独立的 `zeroinitializer` 成员，`1 MiB 全零数组 + 非零标量` 的 `.ll` 从 3.1 MB
+  降到 11 KB。risc6 的 `Makefile` 因此回到「c6 直出 `.ll` → clang/wasm-ld」两步，
+  小工具与其在 `Makefile` 里的两次调用一起删掉。
+
 ## [0.1.0] — 2026-11-12
 
 首个可用版本：`c6` 写的 RV32IMAC+Zicsr 机器模拟器，native 与 wasm32 双后端功能等价。

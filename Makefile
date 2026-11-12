@@ -34,8 +34,7 @@ dirs:
 
 # ---- native -------------------------------------------------------------
 $(BUILD)/native/rv32.ll: src/rv32.c6 include/risc6.h | dirs
-	$(C6) -B $(C6B) -Iinclude --emit-llvm -o $@.raw src/rv32.c6
-	$(PYTHON) tools/ll-zero.py $@.raw $@
+	$(C6) -B $(C6B) -Iinclude --emit-llvm -o $@ src/rv32.c6
 
 $(BUILD)/risc6: $(BUILD)/native/rv32.ll port/host_native.c include/risc6.h | dirs
 	$(CC) $(NATIVE_CFLAGS) -o $@ $(BUILD)/native/rv32.ll port/host_native.c \
@@ -44,8 +43,7 @@ $(BUILD)/risc6: $(BUILD)/native/rv32.ll port/host_native.c include/risc6.h | dir
 # ---- wasm32 -------------------------------------------------------------
 $(BUILD)/wasm/rv32.ll: src/rv32.c6 include/risc6.h | dirs
 	$(C6) -B $(C6B) -Iinclude --target=wasm32-unknown-unknown --emit-llvm \
-		-o $@.raw src/rv32.c6
-	$(PYTHON) tools/ll-zero.py $@.raw $@
+		-o $@ src/rv32.c6
 
 $(BUILD)/wasm/rv32.o: $(BUILD)/wasm/rv32.ll
 	$(CC) $(WASMFLAGS) -c -o $@ $<
