@@ -76,6 +76,7 @@ docs/               设计文档 + 任务板
 | `make bare`（bare 模式陷阱/抢占） | 16 次 MTIP 注入，寄存器帧完好，比 native 与 wasm 逐字节相同 |
 | `make harts`（双 hart） | native/wasm 均 `PASS: two harts`，4078 条指令一致 |
 | 双 hart 定时器隔离 | native/wasm 均 `PASS: per-hart timer irq`，4,001,339 条指令一致 |
+| 双 hart 原子加 | native/wasm 均 `PASS: two-hart atomic add`，604,118 条指令一致 |
 | c6LOS `rv32/{hello,sched,tick}` | 输出与 `qemu-riscv32` 逐字节一致（1776 / 35854 / 1594931 条指令） |
 | 性能 native | ~44 Minsn/s（单 TU 时 47.5） |
 | 性能 wasm（node） | ~35 Minsn/s |
