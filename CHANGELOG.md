@@ -9,7 +9,9 @@
 - **多 hart**：`--harts N`（1–4）。每个 hart 有独立的 32 个寄存器、PC、mstatus/mie/mip/
   mtvec/mepc/mcause/mtval/mscratch、lr/sc 保留地址和 MTIP 切片；主循环按 2000 条指令
   切片轮转，共享 guest 内存、控制台、MMIO 与全局指令预算。`mhartid` 返回当前 hart。
-  native 与 wasm 的 `t_harts` 都是 4078 条指令、`PASS: two harts`。
+  native 与 wasm 的 `t_harts` 都是 4078 条指令、`PASS: two harts`；
+  `t_harts_irq` 验证每 hart 独立 `mtvec/mscratch/mie/mstatus` 与 MTIP，
+  native/wasm 都是 4,001,339 条指令、`PASS: per-hart timer irq`。
 
 ### 变更
 

@@ -93,6 +93,7 @@
 | E7-3 | hart 初始化 | 每个 hart 同一 entry、独立 64 KiB 栈、独立 MTIP 切片；`mhartid` 返回 hart id | 完成 |
 | E7-4 | 宿主入口 | native/wasm 均支持 `--harts N`（1–4） | 完成 |
 | E7-5 | 用例 | `tests/t_harts.c` 两 hart 共享内存/交替执行；native+wasm `PASS: two harts`，4078 条指令一致 | 完成 |
+| E7-6 | 每 hart 中断 | `tests/t_harts_irq.c` 两 hart 各自 `mtvec/mscratch/mie/mstatus` + 独立 MTIP；native+wasm `PASS: per-hart timer irq`，4,001,339 条一致 | 完成 |
 
 ---
 

@@ -100,17 +100,24 @@ $(BUILD)/tests/t_bare: tests/t_bare.c tests/bare_start.S tests/bare_trap.S | dir
 $(BUILD)/tests/t_harts: tests/t_harts.c tests/bare_start.S | dirs
 	$(CC) $(RVFLAGS) -o $@ tests/bare_start.S tests/t_harts.c
 
+$(BUILD)/tests/t_harts_irq: tests/t_harts_irq.c tests/harts_trap.S tests/bare_start.S | dirs
+	$(CC) $(RVFLAGS) -o $@ tests/bare_start.S tests/harts_trap.S tests/t_harts_irq.c
+
 bare: $(BUILD)/risc6 wasm $(BUILD)/tests/t_bare
 	@echo "== bare native（靠 ELF 里的 .risc6_bare 标记切模式）"
 	@$(BUILD)/risc6 $(BUILD)/tests/t_bare || true
 	@echo "== bare wasm"
 	@node tools/run-wasm.mjs $(BUILD)/risc6.wasm $(BUILD)/tests/t_bare || true
 
-harts: $(BUILD)/risc6 wasm $(BUILD)/tests/t_harts
+harts: $(BUILD)/risc6 wasm $(BUILD)/tests/t_harts $(BUILD)/tests/t_harts_irq
 	@echo "== two harts native"
 	@$(BUILD)/risc6 --bare --harts 2 $(BUILD)/tests/t_harts
 	@echo "== two harts wasm"
 	@node tools/run-wasm.mjs $(BUILD)/risc6.wasm $(BUILD)/tests/t_harts --bare --harts 2
+	@echo "== per-hart timer irq native"
+	@$(BUILD)/risc6 --bare --harts 2 $(BUILD)/tests/t_harts_irq
+	@echo "== per-hart timer irq wasm"
+	@node tools/run-wasm.mjs $(BUILD)/risc6.wasm $(BUILD)/tests/t_harts_irq --bare --harts 2
 
 selfcheck: $(BUILD)/risc6 wasm $(TESTBIN)
 	@sh tools/selfcheck.sh $(BUILD)/tests/t_hello
