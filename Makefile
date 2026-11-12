@@ -13,16 +13,18 @@ CC      := clang
 WASMLD  := wasm-ld
 BUILD   := build
 QEMU    ?= qemu-riscv32
+PYTHON  ?= python3
 
 NATIVE_CFLAGS := -O2 -g -Iinclude
 RVFLAGS := --target=riscv32-unknown-linux-gnu -march=rv32imac -mabi=ilp32 \
-           -nostdlib -ffreestanding -O1 -Iinclude -Itests -static -fuse-ld=lld
+           -nostdlib -ffreestanding -O1 -Iinclude -Itests -static -fuse-ld=lld \
+           -msmall-data-limit=0
 WASMFLAGS := --target=wasm32-unknown-unknown -O2 -ffreestanding -Iinclude
 
 TESTS   := t_hello t_isa t_mem t_atomic
 TESTBIN := $(addprefix $(BUILD)/tests/,$(TESTS))
 
-.PHONY: all wasm check clean run run-wasm stats dirs
+.PHONY: all wasm check selfcheck bare clean run run-wasm stats dirs
 
 all: $(BUILD)/risc6
 wasm: $(BUILD)/risc6.wasm
@@ -32,7 +34,8 @@ dirs:
 
 # ---- native -------------------------------------------------------------
 $(BUILD)/native/rv32.ll: src/rv32.c6 include/risc6.h | dirs
-	$(C6) -B $(C6B) -Iinclude --emit-llvm -o $@ src/rv32.c6
+	$(C6) -B $(C6B) -Iinclude --emit-llvm -o $@.raw src/rv32.c6
+	$(PYTHON) tools/ll-zero.py $@.raw $@
 
 $(BUILD)/risc6: $(BUILD)/native/rv32.ll port/host_native.c include/risc6.h | dirs
 	$(CC) $(NATIVE_CFLAGS) -o $@ $(BUILD)/native/rv32.ll port/host_native.c \
@@ -41,7 +44,8 @@ $(BUILD)/risc6: $(BUILD)/native/rv32.ll port/host_native.c include/risc6.h | dir
 # ---- wasm32 -------------------------------------------------------------
 $(BUILD)/wasm/rv32.ll: src/rv32.c6 include/risc6.h | dirs
 	$(C6) -B $(C6B) -Iinclude --target=wasm32-unknown-unknown --emit-llvm \
-		-o $@ src/rv32.c6
+		-o $@.raw src/rv32.c6
+	$(PYTHON) tools/ll-zero.py $@.raw $@
 
 $(BUILD)/wasm/rv32.o: $(BUILD)/wasm/rv32.ll
 	$(CC) $(WASMFLAGS) -c -o $@ $<
@@ -54,6 +58,7 @@ $(BUILD)/risc6.wasm: $(BUILD)/wasm/rv32.o $(BUILD)/wasm/host.o
 		--export=wx_run --export=wx_in_addr --export=wx_out_addr \
 		--export=wx_out_len --export=wx_diag_addr --export=wx_diag_len \
 		--export=wx_insns_lo --export=wx_insns_hi --export=wx_set_limit \
+		--export=wx_stat_addr --export=wx_set_mode \
 		--export-memory --initial-memory=16777216 \
 		-o $@ $(BUILD)/wasm/rv32.o $(BUILD)/wasm/host.o
 
@@ -74,6 +79,19 @@ run-wasm: wasm
 
 check: $(BUILD)/risc6 $(TESTBIN)
 	@sh tools/check.sh $(TESTBIN)
+
+# ---- bare 模式用例（T5）：只在 risc6 上跑，qemu user-mode 不支持 CSR ----
+$(BUILD)/tests/t_bare: tests/t_bare.c tests/bare_start.S tests/bare_trap.S | dirs
+	$(CC) $(RVFLAGS) -o $@ tests/bare_start.S tests/bare_trap.S tests/t_bare.c
+
+bare: $(BUILD)/risc6 wasm $(BUILD)/tests/t_bare
+	@echo "== bare native（靠 ELF 里的 .risc6_bare 标记切模式）"
+	@$(BUILD)/risc6 $(BUILD)/tests/t_bare || true
+	@echo "== bare wasm"
+	@node tools/run-wasm.mjs $(BUILD)/risc6.wasm $(BUILD)/tests/t_bare || true
+
+selfcheck: $(BUILD)/risc6 wasm $(TESTBIN)
+	@sh tools/selfcheck.sh $(BUILD)/tests/t_hello
 
 stats: $(BUILD)/risc6 $(TESTBIN)
 	@for t in $(TESTBIN); do echo "== $$t"; $(BUILD)/risc6 $$t >/dev/null; done

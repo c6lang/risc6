@@ -307,6 +307,15 @@ int risc6_run(u32 in_len):
 不做的事：打包指令缓存（把译码结果存成 u32 数组）留作性能不达标的退路（§11）。
 `risc6_stat_insns` 落指令数，CI 里跟踪回归。
 
+实测（clang 19.1.4，`-O2`，node v24.13.1，同一批 ELF）：
+
+| 后端 | 用例 | 指令数 | 速率 |
+|---|---|---|---|
+| native | c6LOS `tick/sched` | 1 594 931 | ~47 Minsn/s |
+| wasm（node） | c6LOS `tick/sched` | 1 594 931 | ~35 Minsn/s |
+
+两个后端指令数与计数器逐项相同，说明分派逻辑没有后端相关的行为差异。
+
 ---
 
 ## 9. 构建
@@ -338,7 +347,7 @@ src/rv32.c6 ──c6 --target=wasm32-unknown-unknown --emit-llvm──> build/wa
 |---|---|---|
 | T0 | c6 `test "…"` 块：RVC 展开表、`mulh` 边界、`div` 除零/溢出、sext、CSR 编解码 | `make check-unit` 全绿 |
 | T1 | RV32 ELF 用例（`tests/t_*.c`，clang 编）：hello、isa（算术/移位/M/64 位/压缩）、mem（memcpy/memmove/结构体/函数指针表）、atomic（`lr/sc`+`amo*`） | 用例自判并返回失败数 |
-| T2 | **对拍 qemu-riscv32**：stdout 与退出码一致 | `tools/diff-qemu.sh` 0 差异 |
+| T2 | **对拍 qemu-riscv32**：stdout 与退出码一致 | `tools/check.sh` 0 差异 |
 | T3 | c6LOS 真用例：`build/rv32/{hello,sched,tick}` 在 risc6 下 PASS | 三行 `PASS`（`tick` 只比 PASS 行） |
 | T4 | wasm 后端：同一批 ELF 在 node 里跑，输出与 native **字节级一致** | diff 为空 |
 | T5 | 覆盖率闸门：每个 opcode / RVC 象限 / CSR 命中计数 > 0 | `--stats` 无零命中 |
@@ -346,8 +355,12 @@ src/rv32.c6 ──c6 --target=wasm32-unknown-unknown --emit-llvm──> build/wa
 验收命令（合并前）：
 
 ```sh
-make clean && make && make wasm && make check
+make clean && make && make wasm && make check && make selfcheck && make bare
 ```
+
+结果（E6 收尾时实测）：`check` 4 用例 native/wasm/qemu 全一致；`selfcheck` 8 项全过；
+`bare` 在 native 与 wasm 下都是 `PASS: bare traps`（16 次 MTIP 注入、`mcause=0x80000007`、
+`ecall` → `mcause=11`、陷阱帧完好）。
 
 ---
 

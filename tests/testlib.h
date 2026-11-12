@@ -9,6 +9,13 @@ typedef unsigned short     u16;
 typedef unsigned int       u32;
 typedef unsigned long long u64;
 typedef long long          i64;
+typedef signed int         i32;
+
+/* support.c 提供 */
+void *memcpy(void *dst, const void *src, unsigned long n);
+void *memmove(void *dst, const void *src, unsigned long n);
+void *memset(void *dst, int c, unsigned long n);
+int memcmp(const void *a, const void *b, unsigned long n);
 
 #define OUT_CAP 4096
 

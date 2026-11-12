@@ -150,7 +150,7 @@ static void test_u64(void)
     ck_eq64(m / n, 0x1234567ull, "u64 div");
     ck_eq64(m % n, 0x89ABCull, "u64 mod");
     ck_eq64(m >> 16, 0x12345678ull, "u64 srl");
-    ck_eq64(m << 8, 0x3456789ABC00ull, "u64 sll");
+    ck_eq64(m << 8, 0x123456789ABC00ull, "u64 sll");
     ck_eq64((u64)((i64)-1024 >> 4), (u64)(-64ll), "i64 sra");
     ck_eq((u32)(m > n), 1u, "u64 cmp");
     ck_eq((u32)(m == 0x123456789ABCull), 1u, "u64 eq");

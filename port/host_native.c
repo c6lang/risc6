@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include "risc6.h"
 
@@ -13,7 +14,10 @@ static int usage(void)
             "usage: risc6 [options] <file.elf>\n"
             "  --limit N     instruction budget (default %llu)\n"
             "  --trace       trace every instruction to stderr\n"
-            "  --quiet       do not print instruction count\n",
+            "  --quiet       do not print instruction count\n"
+            "  --time        print wall time and instructions/second\n"
+            "  --stats       print coverage counters\n"
+            "  --bare        bare mode (no syscalls, mtvec/mret traps, MTIP)\n",
             (unsigned long long)RISC6_MAX_INSNS);
     return 2;
 }
@@ -24,6 +28,10 @@ int main(int argc, char **argv)
     u64 limit = RISC6_MAX_INSNS;
     int trace = 0;
     int quiet = 0;
+    int want_time = 0;
+    int want_stats = 0;
+    int bare = 0;
+    double t0 = 0.0, t1 = 0.0;
     FILE *f = NULL;
     size_t n = 0;
     int rc = 0;
@@ -37,6 +45,12 @@ int main(int argc, char **argv)
             trace = 1;
         } else if (strcmp(a, "--quiet") == 0) {
             quiet = 1;
+        } else if (strcmp(a, "--time") == 0) {
+            want_time = 1;
+        } else if (strcmp(a, "--stats") == 0) {
+            want_stats = 1;
+        } else if (strcmp(a, "--bare") == 0) {
+            bare = 1;
         } else if (a[0] == '-') {
             return usage();
         } else if (path == NULL) {
@@ -68,7 +82,20 @@ int main(int argc, char **argv)
 
     risc6_set_limit(limit);
     risc6_set_trace((u32)trace);
+    if (bare) {
+        risc6_set_mode(1u);
+    }
+    if (want_time) {
+        struct timespec ts;
+        clock_gettime(CLOCK_MONOTONIC, &ts);
+        t0 = (double)ts.tv_sec + (double)ts.tv_nsec / 1e9;
+    }
     rc = risc6_run((u32)n);
+    if (want_time) {
+        struct timespec ts;
+        clock_gettime(CLOCK_MONOTONIC, &ts);
+        t1 = (double)ts.tv_sec + (double)ts.tv_nsec / 1e9;
+    }
 
     if (risc6_out_len > 0) {
         fwrite(risc6_out, 1, (size_t)risc6_out_len, stdout);
@@ -76,6 +103,31 @@ int main(int argc, char **argv)
     fflush(stdout);
     if (risc6_diag_len > 0) {
         fwrite(risc6_diag, 1, (size_t)risc6_diag_len, stderr);
+    }
+    if (want_stats) {
+        static const char *names[RISC6_STAT_N] = {
+            "lui", "auipc", "jal", "jalr", "branch", "load", "store",
+            "op-imm", "op", "fence", "amo", "system", "bad-insn",
+            "compressed", "ecall", "trap", "mtip", "csr-unimpl"
+        };
+        unsigned k = 0;
+        unsigned long long sum = 0;
+        for (k = 0; k < RISC6_STAT_N; k++) {
+            if (names[k] != NULL && risc6_stat[k] != 0) {
+                fprintf(stderr, "risc6: stat %-11s %u\n", names[k],
+                        (unsigned)risc6_stat[k]);
+                if (k <= ST_SYSTEM) {
+                    sum += risc6_stat[k];
+                }
+            }
+        }
+        fprintf(stderr, "risc6: stat decoded     %llu\n", sum);
+    }
+    if (want_time && !quiet) {
+        double dt = (t1 > t0) ? (t1 - t0) : 0.0;
+        double rate = (dt > 0.0) ? (double)risc6_stat_insns / dt / 1e6 : 0.0;
+        fprintf(stderr, "risc6: time=%.3fms rate=%.1f Minsn/s\n",
+                dt * 1000.0, rate);
     }
     if (!quiet) {
         fprintf(stderr, "risc6: insns=%llu rc=%d\n",

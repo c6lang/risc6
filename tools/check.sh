@@ -32,6 +32,7 @@ total=0
 for elf in "$@"; do
     name=$(basename "$elf")
     total=$((total + 1))
+    case_fail=0
 
     "$EMU" --quiet "$elf" >"$OUT/$name.native.out" 2>"$OUT/$name.native.err"
     nrc=$?
@@ -47,7 +48,7 @@ for elf in "$@"; do
         if ! cmp -s "$ref_out" "$OUT/$name.wasm.out" || [ "$wrc" -ne "$ref_rc" ]; then
             echo "FAIL $name: wasm 与 native 不一致 (wasm rc=$wrc native rc=$ref_rc)"
             diff -u "$ref_out" "$OUT/$name.wasm.out" | head -20
-            fail=$((fail + 1))
+            case_fail=$((case_fail + 1))
         fi
         ref_name="$ref_name+wasm"
     fi
@@ -58,15 +59,17 @@ for elf in "$@"; do
         if ! cmp -s "$ref_out" "$OUT/$name.qemu.out" || [ "$qrc" -ne "$ref_rc" ]; then
             echo "FAIL $name: qemu 与 $ref_name 不一致 (qemu rc=$qrc rc=$ref_rc)"
             diff -u "$ref_out" "$OUT/$name.qemu.out" | head -20
-            fail=$((fail + 1))
+            case_fail=$((case_fail + 1))
         fi
         ref_name="$ref_name+qemu"
     fi
 
     if [ "$ref_rc" -ne 0 ]; then
         echo "FAIL $name: 退出码 $ref_rc（见 $OUT/$name.native.err）"
-        fail=$((fail + 1))
-    else
+        case_fail=$((case_fail + 1))
+    fi
+    fail=$((fail + case_fail))
+    if [ "$case_fail" -eq 0 ]; then
         echo "ok   $name ($ref_name, rc=0)"
     fi
 done

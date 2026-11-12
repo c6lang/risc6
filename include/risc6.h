@@ -27,6 +27,32 @@ typedef signed long long   i64;
 #define RISC6_SLICE      50000u                 /* bare 模式中断注入切片 */
 #define RISC6_MAX_INSNS  2000000000ull          /* 默认指令预算 */
 
+/* MMIO：bare 模式没有系统调用，guest 用这两条写来输出/退出（§5.3） */
+#define RISC6_MMIO_BASE    0x40000000u
+#define RISC6_MMIO_CONSOLE RISC6_MMIO_BASE          /* 写：输出一个字节 */
+#define RISC6_MMIO_EXIT    (RISC6_MMIO_BASE + 4u)   /* 写 32 位：退出码（低 8 位） */
+
+/* 覆盖率统计槽位（docs/design.md §10 E4）。宿主只读，c6 侧累加。 */
+#define RISC6_STAT_N     24
+#define ST_LUI        0
+#define ST_AUIPC      1
+#define ST_JAL        2
+#define ST_JALR       3
+#define ST_BRANCH     4
+#define ST_LOAD       5
+#define ST_STORE      6
+#define ST_OPIMM      7
+#define ST_OP         8
+#define ST_FENCE      9
+#define ST_AMO        10
+#define ST_SYSTEM     11
+#define ST_BAD        12   /* 非法/未支持指令 */
+#define ST_RVC        13   /* 压缩指令条数 */
+#define ST_ECALL      14
+#define ST_TRAP       15   /* 进入陷阱次数 */
+#define ST_MTIP       16   /* 注入的定时器中断次数 */
+#define ST_CSRUNK     17   /* 未实现 CSR 访问次数 */
+
 /* ---- 与宿主共享的数据符号：由 src/rv32.c6 定义（定义侧定义 RISC6_CORE） ---- */
 #ifndef RISC6_CORE
 extern u8  risc6_mem[RISC6_MEM_SIZE];   /* guest 内存窗（宿主只读） */
@@ -36,12 +62,14 @@ extern u32 risc6_out_len;
 extern u8  risc6_diag[RISC6_DIAG_MAX];  /* 模拟器诊断（宿主读） */
 extern u32 risc6_diag_len;
 extern u64 risc6_stat_insns;            /* 指令计数（宿主读） */
+extern u32 risc6_stat[RISC6_STAT_N];    /* 覆盖率统计（宿主读） */
 #endif /* RISC6_CORE */
 
 /* ---- 入口：c6 定义、宿主调用 ---- */
 int  risc6_run(u32 in_len);
 void risc6_set_limit(u64 max_insns);
 void risc6_set_trace(u32 on);
+void risc6_set_mode(u32 bare);          /* 0 = user（默认），1 = bare */
 
 /* 退出码（模拟器自身，guest 退出码 0..255 透传） */
 #define RISC6_RC_LOAD    200

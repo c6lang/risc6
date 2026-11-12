@@ -60,4 +60,16 @@ docs/               设计文档 + 任务板
 
 ## 状态
 
-**E0–E2 尚未施工**（骨架刚建）。按 `docs/todo.md` 推进，每个里程碑的验收数字写进提交信息。
+**E0–E6 已完成**（E6-2 多 TU、E6-3 浏览器演示为可选项，见 `docs/todo.md`）。
+
+实测（本机 clang 19.1.4 / node v24.13.1 / c6 @ `~/c6`）：
+
+| 项 | 数字 |
+|---|---|
+| `make check`（native + wasm + qemu 三方对拍） | 4 用例全一致 |
+| `make selfcheck`（预算/装载错误码等自检） | 8 项全通过 |
+| `make bare`（bare 模式陷阱/抢占） | 16 次 MTIP 注入，寄存器帧完好，比 native 与 wasm 逐字节相同 |
+| c6LOS `rv32/{hello,sched,tick}` | 输出与 `qemu-riscv32` 逐字节一致（1776 / 35854 / 1594931 条指令） |
+| 性能 native | ~47 Minsn/s |
+| 性能 wasm（node） | ~35 Minsn/s |
+| 用例指令数 | t_hello 352、t_mem 1459、t_atomic 3659、t_isa 5891、t_bare 802158 |

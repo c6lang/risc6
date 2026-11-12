@@ -11,6 +11,8 @@ unsigned long wx_out_len(void);
 unsigned long wx_diag_addr(void);
 unsigned long wx_diag_len(void);
 unsigned long wx_insns_lo(void);
+unsigned long wx_stat_addr(void);
+void wx_set_mode(unsigned long bare);
 unsigned long wx_insns_hi(void);
 void wx_set_limit(unsigned long long n);
 
@@ -52,6 +54,16 @@ unsigned long wx_insns_lo(void)
 unsigned long wx_insns_hi(void)
 {
     return (unsigned long)(risc6_stat_insns >> 32);
+}
+
+unsigned long wx_stat_addr(void)
+{
+    return (unsigned long)(risc6_stat);
+}
+
+void wx_set_mode(unsigned long bare)
+{
+    risc6_set_mode((u32)bare);
 }
 
 void wx_set_limit(unsigned long long n)
