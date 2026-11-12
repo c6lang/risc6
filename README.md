@@ -73,3 +73,12 @@ docs/               设计文档 + 任务板
 | 性能 native | ~47 Minsn/s |
 | 性能 wasm（node） | ~35 Minsn/s |
 | 用例指令数 | t_hello 352、t_mem 1459、t_atomic 3659、t_isa 5891、t_bare 802158 |
+
+## 许可证
+
+Apache-2.0（与 c6LOS 一致，见 `LICENSE`）。
+
+- 本仓库代码全部自研：c6 核心 `src/rv32.c6`、宿主管线、工具脚本、测试用例。
+- 工具链依赖不属于本仓库：native 后端链接 c6 的 `libtcc1.a`（LGPL），它只是**工具链
+  运行时**，和 c6LOS 的 host 单测用法相同；wasm 后端不链接 `libtcc1`。
+- 测试 ELF 来自本仓库 `tests/` 与 c6LOS（同为 Apache-2.0）。
