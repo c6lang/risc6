@@ -5,7 +5,7 @@
 
 ## 施工状态（E6 收尾）
 
-- 全部里程碑 E0–E6 已完成，代码在 `include/risc6.h` + `src/rv32.c6`（单 TU）+ 两个宿主 +
+- 全部里程碑 E0–E6 已完成，代码在 `include/risc6{,_core}.h` + `src/rv32.c6`+`src/sys.c6`（两 TU）+ 两个宿主 +
   4 个工具脚本 + 5 个 RV32 用例；总计约 1400 行 c6 + 300 行宿主/脚本。
 - 验收（本机 clang 19.1.4 / node v24.13.1）：
   - `make check` → `check: 4 用例全部一致`（native / wasm / qemu-riscv32 三方对拍）
@@ -17,7 +17,9 @@
 - 施工期踩到并修掉的真问题：`g_limit` 非零静态初始化把整个 .data 内联进 .wasm（9.5 MB）、
   RVC `c.jal`/`c.lui`/misaligned 取指、ELF 段名扫描提前 break 导致 gp 找不到、
   `csrsi` 的 uimm 是「或上的值」不是位号、测试里手写 `t0` 踩了编译器小数据基址。
-- 剩余可选项：E6-2（等 c6 C0-1/C0-2 合入后拆多 TU）、E6-3（浏览器演示）。
+- E6-2 已做：核心拆成 `src/rv32.c6`（热路径）+ `src/sys.c6`（装载/系统调用/诊断）两个 TU，
+  两个后端都是「多 .ll → 一次链接」；性能 44.0 Minsn/s（单 TU 时 47.5，-7%）。
+- 剩余可选项：E6-3（浏览器演示）。
 
 ---
 
@@ -85,7 +87,7 @@
 | 编号 | 任务 | 验收 | 状态 |
 |---|---|---|---|
 | E6-1 | c6LOS 集成 | c6LOS 加 `run-rv32-emu` / `RISC6` 变量；`docs/testing.md` L2 行更新 | 完成 |
-| E6-2 | 多 TU（可选） | C0-1/C0-2 合入后把 `src/rv32.c6` 拆成 cpu/mem/sys 三个 TU，验收全绿 | 暂缓（等 C0-1/C0-2） |
+| E6-2 | 多 TU | 把核心拆成热/冷两个 TU，两个后端多 .ll 链接，验收全绿 | 完成（rv32.c6 1057 行 + sys.c6 380 行；44.0 Minsn/s） |
 | E6-3 | 浏览器演示（可选） | `tools/index.html` + canvas 仪表盘；与 native 输出一致 | 暂缓（本机无浏览器） |
 | E6-4 | 文档 | design §2 的「实测」表随工具链升级更新；README 状态置「可用」 | 完成 |
 
@@ -107,6 +109,6 @@ E0 ──> E1 ──> E2 ──> E3 ──> E4
 
 | 项 | 状态 | 影响 |
 |---|---|---|
-| C0-1（外部 declare 带类型）/ C0-2（逐 TU emit） | 未合入 | 强制单 TU、c6 不调 C（design §6.1） |
+| C0-1（外部 declare 带类型）/ C0-2（逐 TU emit） | 已实现（c6 分支 `c6/typed-extern`） | 不再强制单 TU；c6 可直接调 C（≤8 字节小结构体按值传参仍是已知限制） |
 | `~/c6/tcc/libtcc1-wasm32.a` | 已存在（4.5 MB） | wasm 路径可用；若重新构建用 `scripts/build-wasm-runtime.sh` |
 | qemu-riscv32 | 本机有 | 对拍；CI 上缺失时脚本应跳过并明确提示（不静默通过） |

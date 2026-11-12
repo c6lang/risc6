@@ -11,6 +11,7 @@
 
 #define RISC6_CORE 1
 #include "risc6.h"
+#include "risc6_core.h"
 
 /* ---------- 与宿主共享的数据符号 ---------- */
 u8  risc6_mem[RISC6_MEM_SIZE] = {0};
@@ -23,102 +24,43 @@ u64 risc6_stat_insns = 0;
 u32 risc6_stat[RISC6_STAT_N] = {0};
 
 /* ---------- 机器状态 ---------- */
-static u32 g_x[32] = {0};
-static u32 g_pc = 0;
-static u32 g_base = 0;        /* guest 窗起点（guest 地址） */
-static u32 g_size = 0;        /* guest 窗大小 */
-static u32 g_brk = 0;
-static u32 g_brk_max = 0;
-static u64 g_insns = 0;
-static u64 g_limit = 0ull;   /* 0 = 用 RISC6_MAX_INSNS 默认预算（§4） */
-static u64 g_next_event = 0;
-static u32 g_trace = 0;
-static u32 g_stop = 0;
-static u32 g_rc = 0;
-static u32 g_mode = 0;        /* 0 = user, 1 = bare */
-static u32 g_reserved = 0;    /* lr.w 保留地址 + 1；0 = 无 */
-static u32 g_in_len = 0;
+u32 g_x[32] = {0};
+u32 g_pc = 0;
+u32 g_base = 0;        /* guest 窗起点（guest 地址） */
+u32 g_size = 0;        /* guest 窗大小 */
+u32 g_brk = 0;
+u32 g_brk_max = 0;
+u64 g_insns = 0;
+u64 g_limit = 0ull;   /* 0 = 用 RISC6_MAX_INSNS 默认预算（§4） */
+u64 g_next_event = 0;
+u32 g_trace = 0;
+u32 g_stop = 0;
+u32 g_rc = 0;
+u32 g_mode = 0;        /* 0 = user, 1 = bare */
+u32 g_reserved = 0;    /* lr.w 保留地址 + 1；0 = 无 */
+u32 g_in_len = 0;
 
 /* CSR */
-static u32 g_mstatus = 0;
-static u32 g_mie = 0;
-static u32 g_mip = 0;
-static u32 g_mtvec = 0;
-static u32 g_mepc = 0;
-static u32 g_mcause = 0;
-static u32 g_mtval = 0;
-static u32 g_mscratch = 0;
+u32 g_mstatus = 0;
+u32 g_mie = 0;
+u32 g_mip = 0;
+u32 g_mtvec = 0;
+u32 g_mepc = 0;
+u32 g_mcause = 0;
+u32 g_mtval = 0;
+u32 g_mscratch = 0;
 
 /* ENOSYS 记录（每个号只报一次） */
-static u32 g_unknown[16] = {0};
-static u32 g_unknown_n = 0;
+u32 g_unknown[16] = {0};
+u32 g_unknown_n = 0;
 
 #define RVC_BAD 0xFFFFFFFFu
-
-/* ==================================================================== */
-/* 诊断与输出                                                           */
-/* ==================================================================== */
-
-static int hexdig(u32 d) {
-    if (d < 10u) {
-        return (int)(48u + d);
-    }
-    return (int)(87u + d);
-}
-
-static void diag_ch(int c) {
-    if (risc6_diag_len < RISC6_DIAG_MAX) {
-        risc6_diag[risc6_diag_len] = (u8)c;
-        risc6_diag_len = risc6_diag_len + 1u;
-    }
-}
-
-static void diag_str(const char *s) {
-    u32 i = 0;
-    while (s[i] != '\0') {
-        diag_ch((int)s[i]);
-        i++;
-    }
-}
-
-static void diag_hex(u32 v) {
-    int i = 8;
-    while (i > 0) {
-        i--;
-        diag_ch(hexdig((v >> (u32)(i * 4)) & 0xFu));
-    }
-}
-
-static void diag_dec(u64 v) {
-    char buf[24] = {0};
-    u32 n = 0;
-    if (v == 0ull) {
-        diag_ch('0');
-        return;
-    }
-    while (v != 0ull && n < 24u) {
-        buf[n] = (char)(48u + (u32)(v % 10ull));
-        v = v / 10ull;
-        n++;
-    }
-    while (n > 0u) {
-        n--;
-        diag_ch((int)buf[n]);
-    }
-}
-
-static void out_ch(int c) {
-    if (risc6_out_len < RISC6_OUT_MAX) {
-        risc6_out[risc6_out_len] = (u8)c;
-        risc6_out_len = risc6_out_len + 1u;
-    }
-}
 
 /* ==================================================================== */
 /* 陷阱                                                                 */
 /* ==================================================================== */
 
-static void take_trap(u32 cause, u32 tval, u32 epc) {
+void risc6_take_trap(u32 cause, u32 tval, u32 epc) {
     u32 tvec = g_mtvec & 0xFFFFFFFCu;
 
     risc6_stat[ST_TRAP]++;
@@ -143,13 +85,13 @@ static void mret(void) {
 
 static void bad_insn(u32 pc, u32 insn) {
     risc6_stat[ST_BAD]++;
-    diag_str("\nrisc6: illegal instruction pc=0x");
-    diag_hex(pc);
-    diag_str(" insn=0x");
-    diag_hex(insn);
-    diag_str("\n");
+    risc6_diag_str("\nrisc6: illegal instruction pc=0x");
+    risc6_diag_hex(pc);
+    risc6_diag_str(" insn=0x");
+    risc6_diag_hex(insn);
+    risc6_diag_str("\n");
     if (g_mode == 1u) {
-        take_trap(2u, insn, pc);
+        risc6_take_trap(2u, insn, pc);
         return;
     }
     g_rc = RISC6_RC_ILLEGAL;
@@ -160,7 +102,7 @@ static void bad_insn(u32 pc, u32 insn) {
 /* 内存                                                                 */
 /* ==================================================================== */
 
-static u32 mem_ok(u32 addr, u32 n) {
+u32 risc6_mem_ok(u32 addr, u32 n) {
     u32 off = 0;
     if (addr < g_base) {
         return 0u;
@@ -175,23 +117,23 @@ static u32 mem_ok(u32 addr, u32 n) {
     return 1u;
 }
 
-static void mem_fault(u32 addr, u32 wr) {
-    diag_str("\nrisc6: ");
+void risc6_mem_fault(u32 addr, u32 wr) {
+    risc6_diag_str("\nrisc6: ");
     if (wr != 0u) {
-        diag_str("store");
+        risc6_diag_str("store");
     } else {
-        diag_str("load");
+        risc6_diag_str("load");
     }
-    diag_str(" out of window addr=0x");
-    diag_hex(addr);
-    diag_str(" pc=0x");
-    diag_hex(g_pc);
-    diag_str("\n");
+    risc6_diag_str(" out of window addr=0x");
+    risc6_diag_hex(addr);
+    risc6_diag_str(" pc=0x");
+    risc6_diag_hex(g_pc);
+    risc6_diag_str("\n");
     if (g_mode == 1u) {
         if (wr != 0u) {
-            take_trap(7u, addr, g_pc);
+            risc6_take_trap(7u, addr, g_pc);
         } else {
-            take_trap(5u, addr, g_pc);
+            risc6_take_trap(5u, addr, g_pc);
         }
         return;
     }
@@ -204,8 +146,8 @@ static u32 ld8(u32 a) {
     if (a >= RISC6_MMIO_BASE && a < (RISC6_MMIO_BASE + 16u)) {
         return 0u;
     }
-    if (mem_ok(a, 1u) == 0u) {
-        mem_fault(a, 0u);
+    if (risc6_mem_ok(a, 1u) == 0u) {
+        risc6_mem_fault(a, 0u);
         return 0u;
     }
     o = a - g_base;
@@ -217,8 +159,8 @@ static u32 ld16(u32 a) {
     if (a >= RISC6_MMIO_BASE && a < (RISC6_MMIO_BASE + 16u)) {
         return 0u;
     }
-    if (mem_ok(a, 2u) == 0u) {
-        mem_fault(a, 0u);
+    if (risc6_mem_ok(a, 2u) == 0u) {
+        risc6_mem_fault(a, 0u);
         return 0u;
     }
     o = a - g_base;
@@ -230,8 +172,8 @@ static u32 ld32(u32 a) {
     if (a >= RISC6_MMIO_BASE && a < (RISC6_MMIO_BASE + 16u)) {
         return 0u;
     }
-    if (mem_ok(a, 4u) == 0u) {
-        mem_fault(a, 0u);
+    if (risc6_mem_ok(a, 4u) == 0u) {
+        risc6_mem_fault(a, 0u);
         return 0u;
     }
     o = a - g_base;
@@ -244,11 +186,11 @@ static u32 ld32(u32 a) {
 static void st8(u32 a, u32 v) {
     u32 o = 0;
     if (a == RISC6_MMIO_CONSOLE) {
-        out_ch((int)(v & 0xFFu));
+        risc6_out_ch((int)(v & 0xFFu));
         return;
     }
-    if (mem_ok(a, 1u) == 0u) {
-        mem_fault(a, 1u);
+    if (risc6_mem_ok(a, 1u) == 0u) {
+        risc6_mem_fault(a, 1u);
         return;
     }
     o = a - g_base;
@@ -258,11 +200,11 @@ static void st8(u32 a, u32 v) {
 static void st16(u32 a, u32 v) {
     u32 o = 0;
     if (a == RISC6_MMIO_CONSOLE) {
-        out_ch((int)(v & 0xFFu));
+        risc6_out_ch((int)(v & 0xFFu));
         return;
     }
-    if (mem_ok(a, 2u) == 0u) {
-        mem_fault(a, 1u);
+    if (risc6_mem_ok(a, 2u) == 0u) {
+        risc6_mem_fault(a, 1u);
         return;
     }
     o = a - g_base;
@@ -273,7 +215,7 @@ static void st16(u32 a, u32 v) {
 static void st32(u32 a, u32 v) {
     u32 o = 0;
     if (a == RISC6_MMIO_CONSOLE) {
-        out_ch((int)(v & 0xFFu));
+        risc6_out_ch((int)(v & 0xFFu));
         return;
     }
     if (a == RISC6_MMIO_EXIT) {
@@ -281,8 +223,8 @@ static void st32(u32 a, u32 v) {
         g_stop = 1u;
         return;
     }
-    if (mem_ok(a, 4u) == 0u) {
-        mem_fault(a, 1u);
+    if (risc6_mem_ok(a, 4u) == 0u) {
+        risc6_mem_fault(a, 1u);
         return;
     }
     o = a - g_base;
@@ -421,93 +363,6 @@ static void csr_write(u32 csr, u32 v) {
 }
 
 /* ==================================================================== */
-/* syscall（user 模式 = Linux 进程 ABI）                                 */
-/* ==================================================================== */
-
-static void note_unknown(u32 num) {
-    u32 i = 0;
-    while (i < g_unknown_n) {
-        if (g_unknown[i] == num) {
-            return;
-        }
-        i++;
-    }
-    if (g_unknown_n < 16u) {
-        g_unknown[g_unknown_n] = num;
-        g_unknown_n = g_unknown_n + 1u;
-    }
-    diag_str("risc6: syscall ");
-    diag_dec((u64)num);
-    diag_str(" -> ENOSYS\n");
-}
-
-static void do_ecall(void) {
-    u32 num = g_x[17];
-
-    risc6_stat[ST_ECALL]++;
-
-    if (g_mode == 1u) {
-        take_trap(11u, 0u, g_pc);
-        return;
-    }
-
-    if (num == 64u) {                     /* write(fd, buf, len) */
-        u32 fd = g_x[10];
-        u32 buf = g_x[11];
-        u32 len = g_x[12];
-        u32 i = 0;
-        if (len == 0u) {
-            g_x[10] = 0u;
-            return;
-        }
-        if (mem_ok(buf, len) == 0u) {
-            mem_fault(buf, 0u);
-            return;
-        }
-        if (fd == 1u || fd == 2u) {
-            u32 o = buf - g_base;
-            while (i < len) {
-                out_ch((int)risc6_mem[o + i]);
-                i++;
-            }
-            g_x[10] = len;
-        } else {
-            g_x[10] = 0xFFFFFFF7u;        /* -EBADF */
-        }
-        return;
-    }
-    if (num == 93u || num == 94u) {       /* exit / exit_group */
-        g_rc = g_x[10] & 0xFFu;
-        g_stop = 1u;
-        return;
-    }
-    if (num == 63u) {                     /* read：v1 无 stdin，一律 EOF */
-        g_x[10] = 0u;
-        return;
-    }
-    if (num == 57u) {                     /* close */
-        g_x[10] = 0u;
-        return;
-    }
-    if (num == 214u) {                    /* brk */
-        u32 req = g_x[10];
-        if (req == 0u) {
-            g_x[10] = g_brk;
-            return;
-        }
-        if (req >= g_brk && req <= g_brk_max) {
-            g_brk = req;
-            g_x[10] = req;
-            return;
-        }
-        g_x[10] = g_brk;
-        return;
-    }
-    g_x[10] = 0xFFFFFFDAu;                /* -ENOSYS */
-    note_unknown(num);
-}
-
-/* ==================================================================== */
 /* 定时事件（bare 模式：指令边界注入 MTIP）                              */
 /* ==================================================================== */
 
@@ -517,7 +372,7 @@ static void tick_event(void) {
     g_mip = g_mip | 0x80u;
     if (((g_mstatus >> 3) & 1u) != 0u && (g_mie & 0x80u) != 0u) {
         g_mip = g_mip & ~0x80u;
-        take_trap(0x80000007u, 0u, g_pc);
+        risc6_take_trap(0x80000007u, 0u, g_pc);
     }
 }
 
@@ -586,11 +441,11 @@ static void exec32(u32 insn, u32 len) {
     u32 next = g_pc + len;
 
     if (g_trace != 0u) {
-        diag_str("risc6: pc=0x");
-        diag_hex(g_pc);
-        diag_str(" insn=0x");
-        diag_hex(insn);
-        diag_str("\n");
+        risc6_diag_str("risc6: pc=0x");
+        risc6_diag_hex(g_pc);
+        risc6_diag_str(" insn=0x");
+        risc6_diag_hex(insn);
+        risc6_diag_str("\n");
     }
 
     switch (op) {
@@ -832,7 +687,7 @@ static void exec32(u32 insn, u32 len) {
             u32 csr = insn >> 20;
             if (f3 == 0u) {
                 if (csr == 0u) {           /* ecall */
-                    do_ecall();
+                    risc6_ecall();
                     if (g_stop != 0u) {
                         return;
                     }
@@ -1123,234 +978,14 @@ static void step(void) {
     exec32(insn, 4u);
 }
 
-/* ==================================================================== */
-/* ELF32 装载                                                           */
-/* ==================================================================== */
-
-static u32 in8(u32 off) {
-    return (u32)risc6_in[off];
-}
-
-static u32 in16(u32 off) {
-    return in8(off) | (in8(off + 1u) << 8);
-}
-
-static u32 in32(u32 off) {
-    return in16(off) | (in16(off + 2u) << 16);
-}
-
-static u32 str_at(u32 off, const char *s) {
-    u32 i = 0;
-    while (s[i] != '\0') {
-        if (in8(off + i) != (u32)(u8)s[i]) {
-            return 0u;
-        }
-        i++;
-    }
-    return in8(off + i) == 0u ? 1u : 0u;
-}
-
-static void zero_mem(u32 n) {
-    u32 i = 0;
-    while (i < n) {
-        risc6_mem[i] = 0u;
-        i++;
-    }
-}
-
-static u32 load_fail(const char *why) {
-    diag_str("\nrisc6: load failed: ");
-    diag_str(why);
-    diag_str("\n");
-    g_rc = RISC6_RC_LOAD;
-    return 0u;
-}
-
-static u32 find_gp(u32 symoff, u32 symsize, u32 stroff) {
-    u32 n = symsize / 16u;
-    u32 i = 0;
-    while (i < n) {
-        u32 base = symoff + i * 16u;
-        u32 name = in32(base) + stroff;
-        u32 val = in32(base + 4u);
-        if (str_at(name, "__global_pointer$") != 0u) {
-            return val;
-        }
-        i++;
-    }
-    return 0u;
-}
-
-static u32 load_elf(u32 len) {
-    u32 phoff = 0;
-    u32 phentsize = 0;
-    u32 phnum = 0;
-    u32 entry = 0;
-    u32 lo = 0xFFFFFFFFu;
-    u32 hi = 0u;
-    u32 stack_top = 0u;
-    u32 size = 0u;
-    u32 i = 0;
-    u32 gp = 0u;
-
-    if (len < 52u) {
-        return load_fail("too short");
-    }
-    if (in8(0u) != 0x7Fu || in8(1u) != 0x45u || in8(2u) != 0x4Cu || in8(3u) != 0x46u) {
-        return load_fail("not an ELF");
-    }
-    if (in8(4u) != 1u) {
-        return load_fail("not ELF32");
-    }
-    if (in8(5u) != 1u) {
-        return load_fail("not little-endian");
-    }
-    if (in16(18u) != 243u) {
-        return load_fail("not EM_RISCV");
-    }
-    if (in16(16u) != 2u) {
-        return load_fail("not ET_EXEC");
-    }
-    entry = in32(24u);
-    phoff = in32(28u);
-    phentsize = in16(42u);
-    phnum = in16(44u);
-    if (phnum == 0u || phentsize < 32u) {
-        return load_fail("no program headers");
-    }
-    if (phoff + phnum * phentsize > len) {
-        return load_fail("program headers beyond file");
-    }
-
-    i = 0;
-    while (i < phnum) {
-        u32 p = phoff + i * phentsize;
-        if (in32(p) == 1u) {               /* PT_LOAD */
-            u32 va = in32(p + 8u);
-            u32 memsz = in32(p + 20u);
-            if (in32(p + 4u) + in32(p + 16u) > len) {
-                return load_fail("segment beyond file");
-            }
-            if (memsz != 0u) {
-                if (va < lo) {
-                    lo = va;
-                }
-                if (va + memsz > hi) {
-                    hi = va + memsz;
-                }
-            }
-        } else if (in32(p) == 3u) {         /* PT_INTERP */
-            return load_fail("dynamic ELF (PT_INTERP)");
-        }
-        i++;
-    }
-    if (hi <= lo) {
-        return load_fail("no loadable segment");
-    }
-
-    g_base = lo & 0xFFFFF000u;
-    stack_top = ((hi + 0xFFFu) & 0xFFFFF000u) + RISC6_STACK_GAP + RISC6_STACK_SIZE;
-    size = stack_top - g_base;
-    if (size > RISC6_MEM_SIZE) {
-        return load_fail("image + stack exceeds RISC6_MEM_SIZE");
-    }
-    g_size = size;
-    zero_mem(size);
-
-    i = 0;
-    while (i < phnum) {
-        u32 p = phoff + i * phentsize;
-        if (in32(p) == 1u) {
-            u32 off = in32(p + 4u);
-            u32 va = in32(p + 8u);
-            u32 filesz = in32(p + 16u);
-            u32 dst = va - g_base;
-            u32 k = 0;
-            while (k < filesz) {
-                risc6_mem[dst + k] = risc6_in[off + k];
-                k++;
-            }
-        }
-        i++;
-    }
-
-    /* 段表：找 gp（链接器松弛要 gp 相对访问）+ 找 .risc6_bare 标记（切 bare 模式） */
-    {
-        u32 shoff = in32(32u);
-        u32 shentsize = in16(46u);
-        u32 shnum = in16(48u);
-        u32 shstrndx = in16(50u);
-        u32 shstr = 0;
-        if (shoff != 0u && shnum != 0u && shentsize >= 40u
-            && shoff + shnum * shentsize <= len) {
-            u32 k = 0;
-            if (shstrndx < shnum) {
-                shstr = in32(shoff + shstrndx * shentsize + 16u);
-            }
-            while (k < shnum) {
-                u32 s = shoff + k * shentsize;
-                if (shstr != 0u) {
-                    u32 nm = shstr + in32(s);
-                    if (nm < len && str_at(nm, ".risc6_bare") != 0u) {
-                        g_mode = 1u;
-                        if (g_trace != 0u) {
-                            diag_str("risc6: .risc6_bare -> bare mode\n");
-                        }
-                    }
-                }
-                if (in32(s + 4u) == 2u) {          /* SHT_SYMTAB */
-                    u32 stroff = in32(shoff + in32(s + 24u) * shentsize + 16u);
-                    gp = find_gp(in32(s + 16u), in32(s + 20u), stroff);
-                }
-                k++;
-            }
-        }
-    }
-
-    g_x[0] = 0u;
-    g_x[2] = (stack_top - 16u) & 0xFFFFFFF0u;
-    g_x[3] = gp;
-    g_x[10] = 0u;
-    g_x[11] = 0u;
-    g_pc = entry;
-    g_brk = (hi + 3u) & 0xFFFFFFFCu;
-    g_brk_max = (g_base + g_size) - 4096u;
-    if (g_trace != 0u) {
-        diag_str("risc6: base=0x");
-        diag_hex(g_base);
-        diag_str(" size=0x");
-        diag_hex(g_size);
-        diag_str(" entry=0x");
-        diag_hex(entry);
-        diag_str(" gp=0x");
-        diag_hex(gp);
-        diag_str(" sp=0x");
-        diag_hex(g_x[2]);
-        diag_str("\n");
-    }
-    return 1u;
-}
 
 /* ==================================================================== */
-/* 入口                                                                 */
+/* 复位与主循环                                                         */
 /* ==================================================================== */
 
-void risc6_set_limit(u64 max_insns) {
-    g_limit = (max_insns != 0ull) ? max_insns : RISC6_MAX_INSNS;
-}
-
-void risc6_set_trace(u32 on) {
-    g_trace = (on != 0u) ? 1u : 0u;
-}
-
-void risc6_set_mode(u32 bare) {
-    g_mode = (bare != 0u) ? 1u : 0u;
-}
-
-int risc6_run(u32 in_len) {
+void risc6_cpu_reset(void) {
     u32 i = 0;
 
-    /* 复位 */
     i = 0;
     while (i < 32u) {
         g_x[i] = 0u;
@@ -1380,26 +1015,16 @@ int risc6_run(u32 in_len) {
     risc6_diag_len = 0u;
     risc6_stat_insns = 0ull;
 
-    if (g_limit == 0ull) {
-        g_limit = RISC6_MAX_INSNS;
-    }
-    if (in_len > RISC6_IN_MAX) {
-        diag_str("\nrisc6: input too large\n");
-        return RISC6_RC_LOAD;
-    }
-    g_in_len = in_len;
-    if (load_elf(in_len) == 0u) {
-        risc6_stat_insns = 0ull;
-        return (int)g_rc;
-    }
+}
 
+void risc6_cpu_run(void) {
     while (g_stop == 0u) {
         if (g_insns >= g_limit) {
-            diag_str("\nrisc6: instruction budget exhausted (limit=");
-            diag_dec(g_limit);
-            diag_str(") pc=0x");
-            diag_hex(g_pc);
-            diag_str("\n");
+            risc6_diag_str("\nrisc6: instruction budget exhausted (limit=");
+            risc6_diag_dec(g_limit);
+            risc6_diag_str(") pc=0x");
+            risc6_diag_hex(g_pc);
+            risc6_diag_str("\n");
             g_rc = RISC6_RC_BUDGET;
             break;
         }
@@ -1410,7 +1035,24 @@ int risc6_run(u32 in_len) {
         step();
         g_insns = g_insns + 1ull;
     }
+}
 
+/* 入口：复位 → 装载 → 主循环（循环在本 TU，每条指令不跨 TU） */
+int risc6_run(u32 in_len) {
+    risc6_cpu_reset();
+    if (g_limit == 0ull) {
+        g_limit = RISC6_MAX_INSNS;
+    }
+    if (in_len > RISC6_IN_MAX) {
+        risc6_diag_str("\nrisc6: input too large\n");
+        return RISC6_RC_LOAD;
+    }
+    g_in_len = in_len;
+    if (load_elf(in_len) == 0u) {
+        risc6_stat_insns = 0ull;
+        return (int)g_rc;
+    }
+    risc6_cpu_run();
     risc6_stat_insns = g_insns;
     return (int)g_rc;
 }

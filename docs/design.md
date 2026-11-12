@@ -218,7 +218,9 @@ ELF32 / little-endian / `ET_EXEC` / `e_machine = 243 (EM_RISCV)` / 无 `PT_INTER
 
 ### 6.1 硬规则（CI/lint 可查）
 
-1. **单 TU**：核心只有 `src/rv32.c6` 一个翻译单元。理由：C0-1（外部 declare 不带类型）
+1. ~~**单 TU**~~ → **两 TU**（c6 已修好外部 declare 的类型，见 §6.1 末尾）。热路径留在
+   `src/rv32.c6`，冷路径（诊断/系统调用/ELF 装载/参数入口）在 `src/sys.c6`，共享状态走
+   `include/risc6_core.h` 的 extern 声明。原设计理由是 C0-1（外部 declare 不带类型）
    与 C0-2（逐 TU emit）未合入，多 TU 在 wasm32 上会签名不匹配。等 C0 合入再拆（E6）。
 2. **c6 不调 C**：见 §5.2。C 只出现在 `port/` 的两个 shim 里，且只「读符号 + 调入口」。
 3. **禁用**：`@T`（GC）、`async/co`、闭包/函数字面量、`f".."`、切片 `T[:]`、
@@ -236,7 +238,8 @@ ELF32 / little-endian / `ET_EXEC` / `e_machine = 243 (EM_RISCV)` / 无 `PT_INTER
 ```
 ~/risc6/
   include/risc6.h     两侧共用：类型、尺寸常量、数据符号与入口声明
-  src/rv32.c6         单 TU 核心：装载 / 译码 / 执行 / syscall / 诊断
+  src/rv32.c6         热路径：取指 / 译码 / 访存 / 陷阱 / 主循环
+  src/sys.c6          冷路径：诊断 / 控制台 / syscall / ELF 装载 / 参数入口
   port/host_native.c  native 宿主：main()、文件读、stdout/stderr
   port/host_wasm.c    wasm 宿主：导出（取地址与转发）
   tools/run-wasm.mjs  node 运行器
@@ -331,10 +334,11 @@ node tools/run-wasm.mjs build/risc6.wasm build/tests/t_hello
 流水线（两条，同一份 `.c6`）：
 
 ```
-src/rv32.c6 ──c6 --emit-llvm──> build/native/rv32.ll
+src/rv32.c6 ─┐
+src/sys.c6  ─┴─c6 --emit-llvm──> build/native/{rv32,sys}.ll
             └─clang -O2 -fuse-ld=lld + port/host_native.c + libtcc1.a ──> build/risc6
 
-src/rv32.c6 ──c6 --target=wasm32-unknown-unknown --emit-llvm──> build/wasm/rv32.ll
+src/{rv32,sys}.c6 ──c6 --target=wasm32-unknown-unknown --emit-llvm──> build/wasm/{rv32,sys}.ll
             └─clang --target=wasm32 -c + port/host_wasm.c
               └─wasm-ld --no-entry --export=... --initial-memory=16MiB → build/risc6.wasm
 ```
@@ -368,7 +372,7 @@ make clean && make && make wasm && make check && make selfcheck && make bare
 
 | 风险 | 触发条件 | 回退 |
 |---|---|---|
-| c6 顶不住 1500 行单 TU、switch 密集 | 编译报错 / 生成代码错 | 拆 3 个 TU（需先修 C0-1）或 `switch` 改两级 `if` 链 |
+| c6 顶不住 switch 密集的热循环 | 编译报错 / 生成代码错 | 热路径已是独立 TU；再不行把 `switch` 拆成两级 `if` 或按 opcode 分组 |
 | 8 MiB 静态数组在 wasm 侧超预算 | `wasm-ld --initial-memory` 失败 | 降到 4 MiB，或分段窗口 |
 | `gp` 相对寻址 | 用例里出现 `lw a0,-2048(gp)` 且 gp=0 | 已按符号表设 `gp`；保险加 `-Wl,--no-relax` |
 | 与 qemu 行为差（`time` 源、非对齐、`brk`） | 对拍差异 | 记进 §5.4「已知偏离」或用例白名单 |

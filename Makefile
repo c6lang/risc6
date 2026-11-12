@@ -33,32 +33,47 @@ dirs:
 	@mkdir -p $(BUILD)/native $(BUILD)/wasm $(BUILD)/tests $(BUILD)/out
 
 # ---- native -------------------------------------------------------------
-$(BUILD)/native/rv32.ll: src/rv32.c6 include/risc6.h | dirs
+# 核心分两个翻译单元：rv32.c6（热路径）+ sys.c6（装载/系统调用/诊断）
+CORE_HDR := include/risc6.h include/risc6_core.h
+CORE_SRC := src/rv32.c6 src/sys.c6
+
+$(BUILD)/native/rv32.ll: src/rv32.c6 $(CORE_HDR) | dirs
 	$(C6) -B $(C6B) -Iinclude --emit-llvm -o $@ src/rv32.c6
 
-$(BUILD)/risc6: $(BUILD)/native/rv32.ll port/host_native.c include/risc6.h | dirs
-	$(CC) $(NATIVE_CFLAGS) -o $@ $(BUILD)/native/rv32.ll port/host_native.c \
-		-L$(C6B) -ltcc1
+$(BUILD)/native/sys.ll: src/sys.c6 $(CORE_HDR) | dirs
+	$(C6) -B $(C6B) -Iinclude --emit-llvm -o $@ src/sys.c6
+
+$(BUILD)/risc6: $(BUILD)/native/rv32.ll $(BUILD)/native/sys.ll \
+		port/host_native.c include/risc6.h | dirs
+	$(CC) $(NATIVE_CFLAGS) -o $@ $(BUILD)/native/rv32.ll \
+		$(BUILD)/native/sys.ll port/host_native.c -L$(C6B) -ltcc1
 
 # ---- wasm32 -------------------------------------------------------------
-$(BUILD)/wasm/rv32.ll: src/rv32.c6 include/risc6.h | dirs
+$(BUILD)/wasm/rv32.ll: src/rv32.c6 $(CORE_HDR) | dirs
 	$(C6) -B $(C6B) -Iinclude --target=wasm32-unknown-unknown --emit-llvm \
 		-o $@ src/rv32.c6
 
+$(BUILD)/wasm/sys.ll: src/sys.c6 $(CORE_HDR) | dirs
+	$(C6) -B $(C6B) -Iinclude --target=wasm32-unknown-unknown --emit-llvm \
+		-o $@ src/sys.c6
+
 $(BUILD)/wasm/rv32.o: $(BUILD)/wasm/rv32.ll
+	$(CC) $(WASMFLAGS) -c -o $@ $<
+
+$(BUILD)/wasm/sys.o: $(BUILD)/wasm/sys.ll
 	$(CC) $(WASMFLAGS) -c -o $@ $<
 
 $(BUILD)/wasm/host.o: port/host_wasm.c include/risc6.h | dirs
 	$(CC) $(WASMFLAGS) -c -o $@ port/host_wasm.c
 
-$(BUILD)/risc6.wasm: $(BUILD)/wasm/rv32.o $(BUILD)/wasm/host.o
+$(BUILD)/risc6.wasm: $(BUILD)/wasm/rv32.o $(BUILD)/wasm/sys.o $(BUILD)/wasm/host.o
 	$(WASMLD) --no-entry \
 		--export=wx_run --export=wx_in_addr --export=wx_out_addr \
 		--export=wx_out_len --export=wx_diag_addr --export=wx_diag_len \
 		--export=wx_insns_lo --export=wx_insns_hi --export=wx_set_limit \
 		--export=wx_stat_addr --export=wx_set_mode --export=wx_version \
 		--export-memory --initial-memory=16777216 \
-		-o $@ $(BUILD)/wasm/rv32.o $(BUILD)/wasm/host.o
+		-o $@ $(BUILD)/wasm/rv32.o $(BUILD)/wasm/sys.o $(BUILD)/wasm/host.o
 
 # ---- 用例（rv32 user-mode ELF，clang 编） --------------------------------
 $(BUILD)/tests/%: tests/%.c tests/start.S tests/support.c tests/testlib.h | dirs

@@ -6,7 +6,8 @@
 因此能在**指令边界**注入定时器中断——被模拟的内核真的跑在陷阱帧上，而宿主
 （node / 浏览器 / native 进程）全程不需要栈切换能力。
 
-- 源码：`src/rv32.c6`（单 TU，c6 语言子集：整数 + 数组 + 函数，无 GC/闭包/切片/libc）
+- 源码：`src/rv32.c6`（热路径）+ `src/sys.c6`（装载/系统调用/诊断），c6 语言子集：
+  整数 + 数组 + 函数，无 GC/闭包/切片/libc
 - 产物：`build/risc6`（native x86-64）、`build/risc6.wasm`（wasm32，node/浏览器可跑）
 - 定位：给 [c6LOS](../rtos-c6) 当 L1.5 参考机——不依赖 qemu 的 rv32 回归，且能证明抢占
 - 设计：[docs/design.md](docs/design.md) · 任务板：[docs/todo.md](docs/todo.md)
@@ -42,7 +43,8 @@ build/risc6 /path/to/c6os/build/rv32/hello
 
 ```
 include/risc6.h     两侧共用：类型、尺寸、数据符号、入口
-src/rv32.c6         核心：装载/译码/执行/syscall/诊断（单 TU）
+src/rv32.c6         热路径：取指/译码/访存/陷阱/主循环
+src/sys.c6          冷路径：诊断/控制台/syscall/ELF 装载/参数入口
 port/host_native.c  native 宿主（main、文件、stdout/stderr）
 port/host_wasm.c    wasm 宿主（导出：喂 ELF、取输出、取退出码）
 tools/run-wasm.mjs  node 运行器
@@ -62,7 +64,7 @@ docs/               设计文档 + 任务板
 
 ## 状态
 
-**E0–E6 已完成**（E6-2 多 TU、E6-3 浏览器演示为可选项，见 `docs/todo.md`）。
+**E0–E6 已完成**（E6-3 浏览器演示为可选项，见 `docs/todo.md`）。核心已是两个 TU。
 
 实测（本机 clang 19.1.4 / node v24.13.1 / c6 @ `~/c6`）：
 
@@ -72,7 +74,7 @@ docs/               设计文档 + 任务板
 | `make selfcheck`（预算/装载错误码等自检） | 8 项全通过 |
 | `make bare`（bare 模式陷阱/抢占） | 16 次 MTIP 注入，寄存器帧完好，比 native 与 wasm 逐字节相同 |
 | c6LOS `rv32/{hello,sched,tick}` | 输出与 `qemu-riscv32` 逐字节一致（1776 / 35854 / 1594931 条指令） |
-| 性能 native | ~47 Minsn/s |
+| 性能 native | ~44 Minsn/s（单 TU 时 47.5） |
 | 性能 wasm（node） | ~35 Minsn/s |
 | 用例指令数 | t_hello 352、t_mem 1459、t_atomic 3659、t_isa 5891、t_bare 802158 |
 
