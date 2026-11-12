@@ -1,5 +1,7 @@
 # risc6 —— 用 c6 写的 RV32IMAC 模拟器（native + wasm32）
 
+> 版本 **0.1.0** · [CHANGELOG](CHANGELOG.md) · Apache-2.0 · `risc6 --version`
+
 一个**机器**模拟器，不是宿主模拟器：它模拟 RISC-V RV32IMAC 的 `pc`/寄存器/内存，
 因此能在**指令边界**注入定时器中断——被模拟的内核真的跑在陷阱帧上，而宿主
 （node / 浏览器 / native 进程）全程不需要栈切换能力。

@@ -13,6 +13,7 @@ unsigned long wx_diag_len(void);
 unsigned long wx_insns_lo(void);
 unsigned long wx_stat_addr(void);
 void wx_set_mode(unsigned long bare);
+const char *wx_version(void);
 unsigned long wx_insns_hi(void);
 void wx_set_limit(unsigned long long n);
 
@@ -59,6 +60,12 @@ unsigned long wx_insns_hi(void)
 unsigned long wx_stat_addr(void)
 {
     return (unsigned long)(risc6_stat);
+}
+
+/* 版本字符串的地址（runner 读 C 字符串用） */
+const char *wx_version(void)
+{
+    return RISC6_VERSION;
 }
 
 void wx_set_mode(unsigned long bare)

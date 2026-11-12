@@ -58,7 +58,7 @@ $(BUILD)/risc6.wasm: $(BUILD)/wasm/rv32.o $(BUILD)/wasm/host.o
 		--export=wx_run --export=wx_in_addr --export=wx_out_addr \
 		--export=wx_out_len --export=wx_diag_addr --export=wx_diag_len \
 		--export=wx_insns_lo --export=wx_insns_hi --export=wx_set_limit \
-		--export=wx_stat_addr --export=wx_set_mode \
+		--export=wx_stat_addr --export=wx_set_mode --export=wx_version \
 		--export-memory --initial-memory=16777216 \
 		-o $@ $(BUILD)/wasm/rv32.o $(BUILD)/wasm/host.o
 

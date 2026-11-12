@@ -1,12 +1,12 @@
 #!/usr/bin/env node
 /* risc6 wasm32 运行器：把 RV32 ELF 喂给 build/risc6.wasm，打印 guest 输出。
- * 用法: node tools/run-wasm.mjs build/risc6.wasm <file.elf> [--limit N] [--quiet] [--time] [--stats] [--bare] */
+ * 用法: node tools/run-wasm.mjs build/risc6.wasm <file.elf> [--limit N] [--quiet] [--time] [--stats] [--bare] [--version] */
 
 import { readFileSync } from 'node:fs';
 
 const argv = process.argv.slice(2);
 if (argv.length < 2) {
-  console.error('usage: node tools/run-wasm.mjs <risc6.wasm> <file.elf> [--limit N] [--quiet] [--time] [--stats] [--bare]');
+  console.error('usage: node tools/run-wasm.mjs <risc6.wasm> <file.elf> [--limit N] [--quiet] [--time] [--stats] [--bare] [--version]');
   process.exit(2);
 }
 
@@ -17,6 +17,7 @@ let quiet = false;
 let wantTime = false;
 let wantStats = false;
 let bare = false;
+let wantVersion = false;
 for (let i = 1; i < argv.length; i++) {
   const a = argv[i];
   if (a === '--limit' && i + 1 < argv.length) limit = BigInt(argv[++i]);
@@ -24,9 +25,25 @@ for (let i = 1; i < argv.length; i++) {
   else if (a === '--time') wantTime = true;
   else if (a === '--stats') wantStats = true;
   else if (a === '--bare') bare = true;
+  else if (a === '--version') wantVersion = true;
   else if (a.startsWith('-')) { console.error(`risc6: unknown option ${a}`); process.exit(2); }
   else if (elfPath === null) elfPath = a;
   else { console.error('risc6: one ELF at a time'); process.exit(2); }
+}
+const { instance } = await WebAssembly.instantiate(readFileSync(wasmPath), {});
+const ex = instance.exports;
+const mem = () => new Uint8Array(ex.memory.buffer);
+
+if (wantVersion) {
+  const p = Number(ex.wx_version());
+  let v = '';
+  for (let i = 0; i < 32; i++) {
+    const c = new Uint8Array(ex.memory.buffer, p + i, 1)[0];
+    if (c === 0) break;
+    v += String.fromCharCode(c);
+  }
+  console.log('risc6(wasm) ' + v);
+  process.exit(0);
 }
 if (elfPath === null) {
   console.error('risc6: missing ELF');
@@ -44,10 +61,6 @@ if (elf.length === 0) {
   process.stderr.write(`risc6: ${elfPath} is empty\n`);
   process.exit(200);
 }
-const { instance } = await WebAssembly.instantiate(readFileSync(wasmPath), {});
-const ex = instance.exports;
-const mem = () => new Uint8Array(ex.memory.buffer);
-
 if (limit !== null) ex.wx_set_limit(limit);
 if (bare) ex.wx_set_mode(1n);
 

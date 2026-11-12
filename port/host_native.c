@@ -11,13 +11,15 @@
 static int usage(void)
 {
     fprintf(stderr,
+            "risc6 " RISC6_VERSION " -- RV32IMAC+Zicsr machine emulator\n"
             "usage: risc6 [options] <file.elf>\n"
             "  --limit N     instruction budget (default %llu)\n"
             "  --trace       trace every instruction to stderr\n"
             "  --quiet       do not print instruction count\n"
             "  --time        print wall time and instructions/second\n"
             "  --stats       print coverage counters\n"
-            "  --bare        bare mode (no syscalls, mtvec/mret traps, MTIP)\n",
+            "  --bare        bare mode (no syscalls, mtvec/mret traps, MTIP)\n"
+            "  --version     print version and exit\n",
             (unsigned long long)RISC6_MAX_INSNS);
     return 2;
 }
@@ -51,6 +53,9 @@ int main(int argc, char **argv)
             want_stats = 1;
         } else if (strcmp(a, "--bare") == 0) {
             bare = 1;
+        } else if (strcmp(a, "--version") == 0) {
+            printf("risc6 " RISC6_VERSION "\n");
+            return 0;
         } else if (a[0] == '-') {
             return usage();
         } else if (path == NULL) {

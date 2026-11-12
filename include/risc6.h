@@ -8,6 +8,9 @@
  *   - c6 侧不调用 C 函数；共享通道只有下面的数据符号。
  */
 
+/* 版本号：发布 tag vX.Y.Z 与此处同步（CHANGELOG.md 有对应条目） */
+#define RISC6_VERSION "0.1.0"
+
 typedef unsigned char      u8;
 typedef unsigned short     u16;
 typedef unsigned int       u32;
