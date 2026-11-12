@@ -1,0 +1,1352 @@
+/* src/rv32.c6 —— risc6 核心：RV32IMAC + Zicsr 机器模拟器（单 TU）
+ *
+ * 硬规则（docs/design.md §6.1）：
+ *   - 不调 C 函数，不跨边界传指针；宿主只通过下面的数据符号通信；
+ *   - 不用 @T / 闭包 / 切片 / interface / err / libc；
+ *   - guest 地址一律 u32 偏移，不拿指针做算术。
+ *
+ * 两种模式：g_mode=0 user（Linux 进程 ABI，drop-in 替代 qemu-riscv32）；
+ *           g_mode=1 bare（M 态陷阱 + 定时器中断注入，E5）。
+ */
+
+#define RISC6_CORE 1
+#include "risc6.h"
+
+/* ---------- 与宿主共享的数据符号 ---------- */
+u8  risc6_mem[RISC6_MEM_SIZE] = {0};
+u8  risc6_in[RISC6_IN_MAX] = {0};
+u8  risc6_out[RISC6_OUT_MAX] = {0};
+u32 risc6_out_len = 0;
+u8  risc6_diag[RISC6_DIAG_MAX] = {0};
+u32 risc6_diag_len = 0;
+u64 risc6_stat_insns = 0;
+
+/* ---------- 机器状态 ---------- */
+static u32 g_x[32] = {0};
+static u32 g_pc = 0;
+static u32 g_base = 0;        /* guest 窗起点（guest 地址） */
+static u32 g_size = 0;        /* guest 窗大小 */
+static u32 g_brk = 0;
+static u32 g_brk_max = 0;
+static u64 g_insns = 0;
+static u64 g_limit = RISC6_MAX_INSNS;
+static u64 g_next_event = 0;
+static u32 g_trace = 0;
+static u32 g_stop = 0;
+static u32 g_rc = 0;
+static u32 g_mode = 0;        /* 0 = user, 1 = bare */
+static u32 g_reserved = 0;    /* lr.w 保留地址 + 1；0 = 无 */
+static u32 g_in_len = 0;
+
+/* CSR */
+static u32 g_mstatus = 0;
+static u32 g_mie = 0;
+static u32 g_mip = 0;
+static u32 g_mtvec = 0;
+static u32 g_mepc = 0;
+static u32 g_mcause = 0;
+static u32 g_mtval = 0;
+static u32 g_mscratch = 0;
+
+/* ENOSYS 记录（每个号只报一次） */
+static u32 g_unknown[16] = {0};
+static u32 g_unknown_n = 0;
+
+#define RVC_BAD 0xFFFFFFFFu
+
+/* ==================================================================== */
+/* 诊断与输出                                                           */
+/* ==================================================================== */
+
+static int hexdig(u32 d) {
+    if (d < 10u) {
+        return (int)(48u + d);
+    }
+    return (int)(87u + d);
+}
+
+static void diag_ch(int c) {
+    if (risc6_diag_len < RISC6_DIAG_MAX) {
+        risc6_diag[risc6_diag_len] = (u8)c;
+        risc6_diag_len = risc6_diag_len + 1u;
+    }
+}
+
+static void diag_str(const char *s) {
+    u32 i = 0;
+    while (s[i] != '\0') {
+        diag_ch((int)s[i]);
+        i++;
+    }
+}
+
+static void diag_hex(u32 v) {
+    int i = 8;
+    while (i > 0) {
+        i--;
+        diag_ch(hexdig((v >> (u32)(i * 4)) & 0xFu));
+    }
+}
+
+static void diag_dec(u64 v) {
+    char buf[24] = {0};
+    u32 n = 0;
+    if (v == 0ull) {
+        diag_ch('0');
+        return;
+    }
+    while (v != 0ull && n < 24u) {
+        buf[n] = (char)(48u + (u32)(v % 10ull));
+        v = v / 10ull;
+        n++;
+    }
+    while (n > 0u) {
+        n--;
+        diag_ch((int)buf[n]);
+    }
+}
+
+static void out_ch(int c) {
+    if (risc6_out_len < RISC6_OUT_MAX) {
+        risc6_out[risc6_out_len] = (u8)c;
+        risc6_out_len = risc6_out_len + 1u;
+    }
+}
+
+/* ==================================================================== */
+/* 陷阱                                                                 */
+/* ==================================================================== */
+
+static void take_trap(u32 cause, u32 tval, u32 epc) {
+    u32 tvec = g_mtvec & 0xFFFFFFFCu;
+    u32 mie = (g_mstatus >> 3) & 1u;
+
+    g_mepc = epc;
+    g_mcause = cause;
+    g_mtval = tval;
+    g_mstatus = (g_mstatus & ~0x1888u) | (mie << 7) | (3u << 11);
+    if (((g_mtvec & 3u) == 1u) && ((cause & 0x80000000u) != 0u)) {
+        g_pc = tvec + 4u * (cause & 0x7FFFFFFFu);
+    } else {
+        g_pc = tvec;
+    }
+}
+
+static void mret(void) {
+    u32 mpie = (g_mstatus >> 7) & 1u;
+    g_mstatus = (g_mstatus & ~0x1888u) | (mpie << 3) | (1u << 7);
+    g_pc = g_mepc;
+}
+
+static void bad_insn(u32 pc, u32 insn) {
+    diag_str("\nrisc6: illegal instruction pc=0x");
+    diag_hex(pc);
+    diag_str(" insn=0x");
+    diag_hex(insn);
+    diag_str("\n");
+    if (g_mode == 1u) {
+        take_trap(2u, insn, pc);
+        return;
+    }
+    g_rc = RISC6_RC_ILLEGAL;
+    g_stop = 1u;
+}
+
+/* ==================================================================== */
+/* 内存                                                                 */
+/* ==================================================================== */
+
+static u32 mem_ok(u32 addr, u32 n) {
+    u32 off = 0;
+    if (addr < g_base) {
+        return 0u;
+    }
+    off = addr - g_base;
+    if (off >= g_size) {
+        return 0u;
+    }
+    if (n > (g_size - off)) {
+        return 0u;
+    }
+    return 1u;
+}
+
+static void mem_fault(u32 addr, u32 wr) {
+    diag_str("\nrisc6: ");
+    if (wr != 0u) {
+        diag_str("store");
+    } else {
+        diag_str("load");
+    }
+    diag_str(" out of window addr=0x");
+    diag_hex(addr);
+    diag_str(" pc=0x");
+    diag_hex(g_pc);
+    diag_str("\n");
+    if (g_mode == 1u) {
+        if (wr != 0u) {
+            take_trap(7u, addr, g_pc);
+        } else {
+            take_trap(5u, addr, g_pc);
+        }
+        return;
+    }
+    g_rc = RISC6_RC_MEM;
+    g_stop = 1u;
+}
+
+static u32 ld8(u32 a) {
+    u32 o = 0;
+    if (mem_ok(a, 1u) == 0u) {
+        mem_fault(a, 0u);
+        return 0u;
+    }
+    o = a - g_base;
+    return (u32)risc6_mem[o];
+}
+
+static u32 ld16(u32 a) {
+    u32 o = 0;
+    if (mem_ok(a, 2u) == 0u) {
+        mem_fault(a, 0u);
+        return 0u;
+    }
+    o = a - g_base;
+    return (u32)risc6_mem[o] | ((u32)risc6_mem[o + 1u] << 8);
+}
+
+static u32 ld32(u32 a) {
+    u32 o = 0;
+    if (mem_ok(a, 4u) == 0u) {
+        mem_fault(a, 0u);
+        return 0u;
+    }
+    o = a - g_base;
+    return (u32)risc6_mem[o]
+         | ((u32)risc6_mem[o + 1u] << 8)
+         | ((u32)risc6_mem[o + 2u] << 16)
+         | ((u32)risc6_mem[o + 3u] << 24);
+}
+
+static void st8(u32 a, u32 v) {
+    u32 o = 0;
+    if (mem_ok(a, 1u) == 0u) {
+        mem_fault(a, 1u);
+        return;
+    }
+    o = a - g_base;
+    risc6_mem[o] = (u8)v;
+}
+
+static void st16(u32 a, u32 v) {
+    u32 o = 0;
+    if (mem_ok(a, 2u) == 0u) {
+        mem_fault(a, 1u);
+        return;
+    }
+    o = a - g_base;
+    risc6_mem[o] = (u8)v;
+    risc6_mem[o + 1u] = (u8)(v >> 8);
+}
+
+static void st32(u32 a, u32 v) {
+    u32 o = 0;
+    if (mem_ok(a, 4u) == 0u) {
+        mem_fault(a, 1u);
+        return;
+    }
+    o = a - g_base;
+    risc6_mem[o] = (u8)v;
+    risc6_mem[o + 1u] = (u8)(v >> 8);
+    risc6_mem[o + 2u] = (u8)(v >> 16);
+    risc6_mem[o + 3u] = (u8)(v >> 24);
+}
+
+/* ==================================================================== */
+/* 小工具                                                               */
+/* ==================================================================== */
+
+static u32 sext(u32 v, u32 bits) {
+    u32 m = 1u << (bits - 1u);
+    return (v ^ m) - m;
+}
+
+static void wreg(u32 rd, u32 v) {
+    if (rd != 0u) {
+        g_x[rd] = v;
+    }
+}
+
+static u32 imm_i(u32 insn) {
+    return sext(insn >> 20, 12);
+}
+
+static u32 imm_s(u32 insn) {
+    u32 v = ((insn >> 25) << 5) | ((insn >> 7) & 0x1Fu);
+    return sext(v, 12);
+}
+
+static u32 imm_b(u32 insn) {
+    u32 v = (((insn >> 31) & 1u) << 12)
+          | (((insn >> 7) & 1u) << 11)
+          | (((insn >> 25) & 0x3Fu) << 5)
+          | (((insn >> 8) & 0xFu) << 1);
+    return sext(v, 13);
+}
+
+static u32 imm_j(u32 insn) {
+    u32 v = (((insn >> 31) & 1u) << 20)
+          | (((insn >> 12) & 0xFFu) << 12)
+          | (((insn >> 20) & 1u) << 11)
+          | (((insn >> 21) & 0x3FFu) << 1);
+    return sext(v, 21);
+}
+
+/* ==================================================================== */
+/* CSR                                                                  */
+/* ==================================================================== */
+
+static u32 time_now(void) {
+    return (u32)(g_insns * (u64)RISC6_TIME_SCALE);
+}
+
+static u32 csr_read(u32 csr) {
+    if (csr == 0xC00u || csr == 0xB00u) {
+        return time_now();
+    }
+    if (csr == 0xC01u) {
+        return time_now();
+    }
+    if (csr == 0xC02u || csr == 0xB02u) {
+        return (u32)g_insns;
+    }
+    if (csr == 0x300u) {
+        return g_mstatus;
+    }
+    if (csr == 0x301u) {
+        return 0x40000114u;
+    }
+    if (csr == 0x304u) {
+        return g_mie;
+    }
+    if (csr == 0x305u) {
+        return g_mtvec;
+    }
+    if (csr == 0x340u) {
+        return g_mscratch;
+    }
+    if (csr == 0x341u) {
+        return g_mepc;
+    }
+    if (csr == 0x342u) {
+        return g_mcause;
+    }
+    if (csr == 0x343u) {
+        return g_mtval;
+    }
+    if (csr == 0x344u) {
+        return g_mip;
+    }
+    if (csr == 0xF14u) {
+        return 0u;
+    }
+    return 0u;
+}
+
+static void csr_write(u32 csr, u32 v) {
+    if (csr == 0x300u) {
+        g_mstatus = v & 0x1888u;
+        return;
+    }
+    if (csr == 0x304u) {
+        g_mie = v & 0x80u;
+        return;
+    }
+    if (csr == 0x305u) {
+        g_mtvec = v;
+        return;
+    }
+    if (csr == 0x340u) {
+        g_mscratch = v;
+        return;
+    }
+    if (csr == 0x341u) {
+        g_mepc = v & 0xFFFFFFFEu;
+        return;
+    }
+    if (csr == 0x342u) {
+        g_mcause = v;
+        return;
+    }
+    if (csr == 0x343u) {
+        g_mtval = v;
+        return;
+    }
+    if (csr == 0x344u) {
+        g_mip = v & 0x80u;
+        return;
+    }
+    /* 其余：读 0 / 忽略写（design §3.4） */
+}
+
+/* ==================================================================== */
+/* syscall（user 模式 = Linux 进程 ABI）                                 */
+/* ==================================================================== */
+
+static void note_unknown(u32 num) {
+    u32 i = 0;
+    while (i < g_unknown_n) {
+        if (g_unknown[i] == num) {
+            return;
+        }
+        i++;
+    }
+    if (g_unknown_n < 16u) {
+        g_unknown[g_unknown_n] = num;
+        g_unknown_n = g_unknown_n + 1u;
+    }
+    diag_str("risc6: syscall ");
+    diag_dec((u64)num);
+    diag_str(" -> ENOSYS\n");
+}
+
+static void do_ecall(void) {
+    u32 num = g_x[17];
+
+    if (g_mode == 1u) {
+        take_trap(11u, 0u, g_pc);
+        return;
+    }
+
+    if (num == 64u) {                     /* write(fd, buf, len) */
+        u32 fd = g_x[10];
+        u32 buf = g_x[11];
+        u32 len = g_x[12];
+        u32 i = 0;
+        if (len == 0u) {
+            g_x[10] = 0u;
+            return;
+        }
+        if (mem_ok(buf, len) == 0u) {
+            mem_fault(buf, 0u);
+            return;
+        }
+        if (fd == 1u || fd == 2u) {
+            u32 o = buf - g_base;
+            while (i < len) {
+                out_ch((int)risc6_mem[o + i]);
+                i++;
+            }
+            g_x[10] = len;
+        } else {
+            g_x[10] = 0xFFFFFFF7u;        /* -EBADF */
+        }
+        return;
+    }
+    if (num == 93u || num == 94u) {       /* exit / exit_group */
+        g_rc = g_x[10] & 0xFFu;
+        g_stop = 1u;
+        return;
+    }
+    if (num == 63u) {                     /* read：v1 无 stdin，一律 EOF */
+        g_x[10] = 0u;
+        return;
+    }
+    if (num == 57u) {                     /* close */
+        g_x[10] = 0u;
+        return;
+    }
+    if (num == 214u) {                    /* brk */
+        u32 req = g_x[10];
+        if (req == 0u) {
+            g_x[10] = g_brk;
+            return;
+        }
+        if (req >= g_brk && req <= g_brk_max) {
+            g_brk = req;
+            g_x[10] = req;
+            return;
+        }
+        g_x[10] = g_brk;
+        return;
+    }
+    g_x[10] = 0xFFFFFFDAu;                /* -ENOSYS */
+    note_unknown(num);
+}
+
+/* ==================================================================== */
+/* 定时事件（bare 模式：指令边界注入 MTIP）                              */
+/* ==================================================================== */
+
+static void tick_event(void) {
+    g_next_event = g_next_event + (u64)RISC6_SLICE;
+    g_mip = g_mip | 0x80u;
+    if (((g_mstatus >> 3) & 1u) != 0u && (g_mie & 0x80u) != 0u) {
+        g_mip = g_mip & ~0x80u;
+        take_trap(0x80000007u, 0u, g_pc);
+    }
+}
+
+/* ==================================================================== */
+/* 执行器                                                               */
+/* ==================================================================== */
+
+static u32 mul_hi(u32 f3, u32 a, u32 b) {
+    if (f3 == 0u) {                       /* mul */
+        return a * b;
+    }
+    if (f3 == 1u) {                       /* mulh：有符号 × 有符号 高 32 位 */
+        i64 p = (i64)(i32)a * (i64)(i32)b;
+        return (u32)((u64)p >> 32);
+    }
+    if (f3 == 2u) {                       /* mulhsu：有符号 × 无符号 高 32 位 */
+        i64 p = (i64)(i32)a * (i64)(u64)b;
+        return (u32)((u64)p >> 32);
+    }
+    if (f3 == 3u) {                       /* mulhu */
+        u64 p = (u64)a * (u64)b;
+        return (u32)(p >> 32);
+    }
+    if (f3 == 4u) {                       /* div（有符号） */
+        i32 x = (i32)a;
+        i32 y = (i32)b;
+        if (y == 0) {
+            return 0xFFFFFFFFu;
+        }
+        if (x == (i32)0x80000000 && y == -1) {
+            return a;
+        }
+        return (u32)(x / y);
+    }
+    if (f3 == 5u) {                       /* divu */
+        if (b == 0u) {
+            return 0xFFFFFFFFu;
+        }
+        return a / b;
+    }
+    if (f3 == 6u) {                       /* rem（有符号） */
+        i32 x = (i32)a;
+        i32 y = (i32)b;
+        if (y == 0) {
+            return a;
+        }
+        if (x == (i32)0x80000000 && y == -1) {
+            return 0u;
+        }
+        return (u32)(x % y);
+    }
+    /* remu */
+    if (b == 0u) {
+        return a;
+    }
+    return a % b;
+}
+
+static void exec32(u32 insn) {
+    u32 op = insn & 0x7Fu;
+    u32 rd = (insn >> 7) & 0x1Fu;
+    u32 f3 = (insn >> 12) & 0x7u;
+    u32 rs1 = (insn >> 15) & 0x1Fu;
+    u32 rs2 = (insn >> 20) & 0x1Fu;
+    u32 f7 = (insn >> 25) & 0x7Fu;
+    u32 next = g_pc + 4u;
+
+    if (g_trace != 0u) {
+        diag_str("risc6: pc=0x");
+        diag_hex(g_pc);
+        diag_str(" insn=0x");
+        diag_hex(insn);
+        diag_str("\n");
+    }
+
+    switch (op) {
+    case 0x37u:                            /* lui */
+        wreg(rd, insn & 0xFFFFF000u);
+        break;
+    case 0x17u:                            /* auipc */
+        wreg(rd, g_pc + (insn & 0xFFFFF000u));
+        break;
+    case 0x6Fu:                            /* jal */
+        {
+            u32 target = g_pc + imm_j(insn);
+            wreg(rd, g_pc + 4u);
+            next = target;
+        }
+        break;
+    case 0x67u:                            /* jalr */
+        {
+            u32 target = (g_x[rs1] + imm_i(insn)) & 0xFFFFFFFEu;
+            wreg(rd, g_pc + 4u);
+            next = target;
+        }
+        break;
+    case 0x63u:                            /* branch */
+        {
+            u32 a = g_x[rs1];
+            u32 b = g_x[rs2];
+            u32 t = 0u;
+            if (f3 == 0u) {
+                t = (a == b) ? 1u : 0u;
+            } else if (f3 == 1u) {
+                t = (a != b) ? 1u : 0u;
+            } else if (f3 == 4u) {
+                t = ((i32)a < (i32)b) ? 1u : 0u;
+            } else if (f3 == 5u) {
+                t = ((i32)a >= (i32)b) ? 1u : 0u;
+            } else if (f3 == 6u) {
+                t = (a < b) ? 1u : 0u;
+            } else if (f3 == 7u) {
+                t = (a >= b) ? 1u : 0u;
+            } else {
+                bad_insn(g_pc, insn);
+                return;
+            }
+            if (t != 0u) {
+                next = g_pc + imm_b(insn);
+            }
+        }
+        break;
+    case 0x03u:                            /* load */
+        {
+            u32 a = g_x[rs1] + imm_i(insn);
+            u32 v = 0u;
+            if (f3 == 0u) {
+                v = sext(ld8(a), 8u);
+            } else if (f3 == 1u) {
+                v = sext(ld16(a), 16u);
+            } else if (f3 == 2u) {
+                v = ld32(a);
+            } else if (f3 == 4u) {
+                v = ld8(a);
+            } else if (f3 == 5u) {
+                v = ld16(a);
+            } else {
+                bad_insn(g_pc, insn);
+                return;
+            }
+            if (g_stop != 0u) {
+                return;
+            }
+            wreg(rd, v);
+        }
+        break;
+    case 0x23u:                            /* store */
+        {
+            u32 a = g_x[rs1] + imm_s(insn);
+            u32 v = g_x[rs2];
+            if (f3 == 0u) {
+                st8(a, v);
+            } else if (f3 == 1u) {
+                st16(a, v);
+            } else if (f3 == 2u) {
+                st32(a, v);
+            } else {
+                bad_insn(g_pc, insn);
+                return;
+            }
+            if (g_stop != 0u) {
+                return;
+            }
+        }
+        break;
+    case 0x13u:                            /* op-imm */
+        {
+            u32 a = g_x[rs1];
+            u32 imm = imm_i(insn);
+            u32 sh = (insn >> 20) & 0x1Fu;
+            u32 v = 0u;
+            if (f3 == 0u) {
+                v = a + imm;
+            } else if (f3 == 1u) {
+                v = a << sh;
+            } else if (f3 == 2u) {
+                v = ((i32)a < (i32)imm) ? 1u : 0u;
+            } else if (f3 == 3u) {
+                v = (a < imm) ? 1u : 0u;
+            } else if (f3 == 4u) {
+                v = a ^ imm;
+            } else if (f3 == 5u) {
+                if (((insn >> 30) & 1u) != 0u) {
+                    v = (u32)((i32)a >> sh);
+                } else {
+                    v = a >> sh;
+                }
+            } else if (f3 == 6u) {
+                v = a | imm;
+            } else {
+                v = a & imm;
+            }
+            wreg(rd, v);
+        }
+        break;
+    case 0x33u:                            /* op */
+        {
+            u32 a = g_x[rs1];
+            u32 b = g_x[rs2];
+            u32 v = 0u;
+            if (f7 == 0u) {
+                if (f3 == 0u) {
+                    v = a + b;
+                } else if (f3 == 1u) {
+                    v = a << (b & 0x1Fu);
+                } else if (f3 == 2u) {
+                    v = ((i32)a < (i32)b) ? 1u : 0u;
+                } else if (f3 == 3u) {
+                    v = (a < b) ? 1u : 0u;
+                } else if (f3 == 4u) {
+                    v = a ^ b;
+                } else if (f3 == 5u) {
+                    v = a >> (b & 0x1Fu);
+                } else if (f3 == 6u) {
+                    v = a | b;
+                } else {
+                    v = a & b;
+                }
+            } else if (f7 == 0x20u) {
+                if (f3 == 0u) {
+                    v = a - b;
+                } else if (f3 == 5u) {
+                    v = (u32)((i32)a >> (b & 0x1Fu));
+                } else {
+                    bad_insn(g_pc, insn);
+                    return;
+                }
+            } else if (f7 == 0x01u) {
+                v = mul_hi(f3, a, b);
+            } else {
+                bad_insn(g_pc, insn);
+                return;
+            }
+            wreg(rd, v);
+        }
+        break;
+    case 0x0Fu:                            /* fence / fence.i：无 cache 模型 */
+        break;
+    case 0x2Fu:                            /* A 扩展 */
+        {
+            u32 f5 = (insn >> 27) & 0x1Fu;
+            u32 a = g_x[rs1];
+            if (f5 == 2u) {                /* lr.w */
+                u32 v = ld32(a);
+                if (g_stop != 0u) {
+                    return;
+                }
+                g_reserved = a + 1u;
+                wreg(rd, v);
+            } else if (f5 == 3u) {         /* sc.w */
+                if (g_reserved == (a + 1u)) {
+                    st32(a, g_x[rs2]);
+                    if (g_stop != 0u) {
+                        return;
+                    }
+                    g_reserved = 0u;
+                    wreg(rd, 0u);
+                } else {
+                    wreg(rd, 1u);
+                }
+            } else {
+                u32 old = ld32(a);
+                u32 b = g_x[rs2];
+                u32 nv = old;
+                if (g_stop != 0u) {
+                    return;
+                }
+                if (f5 == 0u) {
+                    nv = old + b;
+                } else if (f5 == 1u) {
+                    nv = b;
+                } else if (f5 == 4u) {
+                    nv = old ^ b;
+                } else if (f5 == 8u) {
+                    nv = old | b;
+                } else if (f5 == 12u) {
+                    nv = old & b;
+                } else if (f5 == 16u) {
+                    nv = ((i32)old < (i32)b) ? old : b;
+                } else if (f5 == 20u) {
+                    nv = ((i32)old > (i32)b) ? old : b;
+                } else if (f5 == 24u) {
+                    nv = (old < b) ? old : b;
+                } else if (f5 == 28u) {
+                    nv = (old > b) ? old : b;
+                } else {
+                    bad_insn(g_pc, insn);
+                    return;
+                }
+                st32(a, nv);
+                if (g_stop != 0u) {
+                    return;
+                }
+                wreg(rd, old);
+            }
+        }
+        break;
+    case 0x73u:                            /* SYSTEM */
+        {
+            u32 csr = insn >> 20;
+            if (f3 == 0u) {
+                if (csr == 0u) {           /* ecall */
+                    do_ecall();
+                    if (g_stop != 0u) {
+                        return;
+                    }
+                    if (g_mode == 1u) {    /* 陷阱已经改了 pc */
+                        return;
+                    }
+                    break;
+                }
+                if (csr == 1u) {           /* ebreak */
+                    bad_insn(g_pc, insn);
+                    return;
+                }
+                if (csr == 0x302u) {       /* mret */
+                    if (g_mode == 1u) {
+                        mret();
+                        return;
+                    }
+                    bad_insn(g_pc, insn);
+                    return;
+                }
+                if (csr == 0x105u) {       /* wfi：无事件模型，按 nop */
+                    break;
+                }
+                if (csr == 0x120u || csr == 0x121u || csr == 0x122u) {
+                    break;                 /* sfence.vma 等：nop */
+                }
+                bad_insn(g_pc, insn);
+                return;
+            }
+            if (f3 == 4u) {                /* 保留 */
+                bad_insn(g_pc, insn);
+                return;
+            }
+            {
+                u32 old = csr_read(csr);
+                u32 src = ((f3 & 4u) != 0u) ? rs1 : g_x[rs1];
+                u32 nv = old;
+                if ((f3 & 3u) == 1u) {
+                    nv = src;
+                } else if ((f3 & 3u) == 2u) {
+                    if (src != 0u) {
+                        nv = old | src;
+                    }
+                } else {
+                    if (src != 0u) {
+                        nv = old & ~src;
+                    }
+                }
+                csr_write(csr, nv);
+                wreg(rd, old);
+            }
+        }
+        break;
+    default:
+        bad_insn(g_pc, insn);
+        return;
+    }
+
+    g_pc = next;
+}
+
+/* ==================================================================== */
+/* RVC 展开：16 位 → 等价 32 位指令                                      */
+/* ==================================================================== */
+
+static u32 enc_r(u32 f7, u32 rs2, u32 rs1, u32 f3, u32 rd, u32 op) {
+    return (f7 << 25) | (rs2 << 20) | (rs1 << 15) | (f3 << 12) | (rd << 7) | op;
+}
+
+static u32 enc_i(u32 imm, u32 rs1, u32 f3, u32 rd, u32 op) {
+    return ((imm & 0xFFFu) << 20) | (rs1 << 15) | (f3 << 12) | (rd << 7) | op;
+}
+
+static u32 enc_s(u32 imm, u32 rs2, u32 rs1, u32 f3, u32 op) {
+    return (((imm >> 5) & 0x7Fu) << 25) | (rs2 << 20) | (rs1 << 15)
+         | (f3 << 12) | ((imm & 0x1Fu) << 7) | op;
+}
+
+static u32 enc_b(u32 imm, u32 rs2, u32 rs1, u32 f3) {
+    return (((imm >> 12) & 1u) << 31) | (((imm >> 5) & 0x3Fu) << 25)
+         | (rs2 << 20) | (rs1 << 15) | (f3 << 12)
+         | (((imm >> 1) & 0xFu) << 8) | (((imm >> 11) & 1u) << 7) | 0x63u;
+}
+
+static u32 enc_j(u32 imm, u32 rd) {
+    return (((imm >> 20) & 1u) << 31) | (((imm >> 1) & 0x3FFu) << 21)
+         | (((imm >> 11) & 1u) << 20) | (((imm >> 12) & 0xFFu) << 12)
+         | (rd << 7) | 0x6Fu;
+}
+
+static u32 c_imm_addi4spn(u32 h) {
+    return (((h >> 11) & 3u) << 4) | (((h >> 7) & 0xFu) << 6)
+         | (((h >> 6) & 1u) << 2) | (((h >> 5) & 1u) << 3);
+}
+
+static u32 c_imm_lw(u32 h) {
+    return (((h >> 10) & 7u) << 3) | (((h >> 6) & 1u) << 2) | (((h >> 5) & 1u) << 6);
+}
+
+static u32 c_imm_sw(u32 h) {
+    return (((h >> 10) & 7u) << 3) | (((h >> 6) & 1u) << 2) | (((h >> 5) & 1u) << 6);
+}
+
+static u32 c_imm_j(u32 h) {
+    u32 v = (((h >> 12) & 1u) << 11) | (((h >> 11) & 1u) << 4)
+          | (((h >> 9) & 3u) << 8) | (((h >> 8) & 1u) << 10)
+          | (((h >> 7) & 1u) << 6) | (((h >> 6) & 1u) << 7)
+          | (((h >> 3) & 7u) << 1) | (((h >> 2) & 1u) << 5);
+    return sext(v, 12);
+}
+
+static u32 c_imm_b(u32 h) {
+    u32 v = (((h >> 12) & 1u) << 8) | (((h >> 10) & 3u) << 3)
+          | (((h >> 5) & 3u) << 6) | (((h >> 3) & 3u) << 1)
+          | (((h >> 2) & 1u) << 5);
+    return sext(v, 9);
+}
+
+static u32 c_imm_addi16sp(u32 h) {
+    u32 v = (((h >> 12) & 1u) << 9) | (((h >> 6) & 1u) << 4)
+          | (((h >> 5) & 1u) << 6) | (((h >> 3) & 3u) << 7)
+          | (((h >> 2) & 1u) << 5);
+    return sext(v, 10);
+}
+
+static u32 c_imm_lwsp(u32 h) {
+    return (((h >> 2) & 3u) << 6) | (((h >> 12) & 1u) << 5) | (((h >> 4) & 7u) << 2);
+}
+
+static u32 c_imm_swsp(u32 h) {
+    return (((h >> 9) & 0xFu) << 2) | (((h >> 7) & 3u) << 6);
+}
+
+static u32 rvc_expand(u32 h) {
+    u32 q = h & 3u;
+    u32 f3 = (h >> 13) & 7u;
+    u32 rdp = ((h >> 2) & 7u) + 8u;
+    u32 rs1p = ((h >> 7) & 7u) + 8u;
+    u32 rd = (h >> 7) & 0x1Fu;
+    u32 shamt = (((h >> 12) & 1u) << 5) | ((h >> 2) & 0x1Fu);
+    u32 imm6 = sext((((h >> 12) & 1u) << 5) | ((h >> 2) & 0x1Fu), 6u);
+
+    if (q == 0u) {
+        if (f3 == 0u) {                    /* c.addi4spn */
+            u32 imm = c_imm_addi4spn(h);
+            if (imm == 0u) {
+                return RVC_BAD;
+            }
+            return enc_i(imm, 2u, 0u, rdp, 0x13u);
+        }
+        if (f3 == 2u) {                    /* c.lw */
+            return enc_i(c_imm_lw(h), rs1p, 2u, rdp, 0x03u);
+        }
+        if (f3 == 6u) {                    /* c.sw */
+            return enc_s(c_imm_sw(h), rdp, rs1p, 2u, 0x23u);
+        }
+        return RVC_BAD;                    /* 其余是 FP/保留（RV32 无 D） */
+    }
+
+    if (q == 1u) {
+        if (f3 == 0u) {                    /* c.addi / c.nop */
+            return enc_i(imm6, rd, 0u, rd, 0x13u);
+        }
+        if (f3 == 1u) {                    /* c.jal（RV32） */
+            if (((h >> 12) & 1u) == 0u) {
+                return RVC_BAD;            /* c.addiw：RV64 */
+            }
+            return enc_j(c_imm_j(h), 1u);
+        }
+        if (f3 == 2u) {                    /* c.li */
+            return enc_i(imm6, 0u, 0u, rd, 0x13u);
+        }
+        if (f3 == 3u) {
+            if (rd == 2u) {                /* c.addi16sp */
+                u32 imm = c_imm_addi16sp(h);
+                if (imm == 0u) {
+                    return RVC_BAD;
+                }
+                return enc_i(imm, 2u, 0u, 2u, 0x13u);
+            }
+            if (rd == 0u) {                /* 保留 */
+                return RVC_BAD;
+            }
+            return (((imm6 >> 12) & 0xFFFFFu) << 12) | (rd << 7) | 0x37u;  /* c.lui */
+        }
+        if (f3 == 4u) {
+            u32 sub = (h >> 10) & 3u;
+            if (sub == 0u) {               /* c.srli */
+                return enc_i(shamt, rs1p, 5u, rs1p, 0x13u);
+            }
+            if (sub == 1u) {               /* c.srai */
+                return enc_i(0x400u | shamt, rs1p, 5u, rs1p, 0x13u);
+            }
+            if (sub == 2u) {               /* c.andi */
+                return enc_i(imm6, rs1p, 7u, rs1p, 0x13u);
+            }
+            if (((h >> 12) & 1u) != 0u) {
+                return RVC_BAD;            /* c.subw/c.addw：RV64 */
+            }
+            {
+                u32 op2 = (h >> 5) & 3u;   /* 00 sub, 01 xor, 10 or, 11 and */
+                if (op2 == 0u) {
+                    return enc_r(0x20u, rdp, rs1p, 0u, rs1p, 0x33u);
+                }
+                if (op2 == 1u) {
+                    return enc_r(0u, rdp, rs1p, 4u, rs1p, 0x33u);
+                }
+                if (op2 == 2u) {
+                    return enc_r(0u, rdp, rs1p, 6u, rs1p, 0x33u);
+                }
+                return enc_r(0u, rdp, rs1p, 7u, rs1p, 0x33u);
+            }
+        }
+        if (f3 == 5u) {                    /* c.j */
+            return enc_j(c_imm_j(h), 0u);
+        }
+        if (f3 == 6u) {                    /* c.beqz */
+            return enc_b(c_imm_b(h), 0u, rs1p, 0u);
+        }
+        /* c.bnez */
+        return enc_b(c_imm_b(h), 0u, rs1p, 1u);
+    }
+
+    if (q == 2u) {
+        if (f3 == 0u) {                    /* c.slli */
+            return enc_i(shamt, rd, 1u, rd, 0x13u);
+        }
+        if (f3 == 2u) {                    /* c.lwsp */
+            if (rd == 0u) {
+                return RVC_BAD;
+            }
+            return enc_i(c_imm_lwsp(h), 2u, 2u, rd, 0x03u);
+        }
+        if (f3 == 4u) {
+            u32 rs2 = (h >> 2) & 0x1Fu;
+            if (((h >> 12) & 1u) == 0u) {
+                if (rs2 == 0u) {           /* c.jr */
+                    if (rd == 0u) {
+                        return RVC_BAD;
+                    }
+                    return enc_i(0u, rd, 0u, 0u, 0x67u);
+                }
+                return enc_r(0u, rs2, 0u, 0u, rd, 0x33u);        /* c.mv */
+            }
+            if (rd == 0u && rs2 == 0u) {   /* c.ebreak */
+                return 0x00100073u;
+            }
+            if (rs2 == 0u) {               /* c.jalr */
+                return enc_i(0u, rd, 0u, 1u, 0x67u);
+            }
+            return enc_r(0u, rs2, rd, 0u, rd, 0x33u);            /* c.add */
+        }
+        if (f3 == 6u) {                    /* c.swsp */
+            return enc_s(c_imm_swsp(h), (h >> 2) & 0x1Fu, 2u, 2u, 0x23u);
+        }
+        return RVC_BAD;
+    }
+
+    return RVC_BAD;                        /* q == 3 走 32 位路径 */
+}
+
+/* ==================================================================== */
+/* 单步                                                                 */
+/* ==================================================================== */
+
+static void step(void) {
+    u32 pc = g_pc;
+    u32 h = 0u;
+    u32 insn = 0u;
+
+    h = ld16(pc);
+    if (g_stop != 0u) {
+        return;
+    }
+    if ((h & 3u) != 3u) {
+        insn = rvc_expand(h);
+        if (insn == RVC_BAD) {
+            bad_insn(pc, h);
+            return;
+        }
+    } else {
+        u32 hi = ld16(pc + 2u);
+        if (g_stop != 0u) {
+            return;
+        }
+        insn = h | (hi << 16);
+    }
+    exec32(insn);
+}
+
+/* ==================================================================== */
+/* ELF32 装载                                                           */
+/* ==================================================================== */
+
+static u32 in8(u32 off) {
+    return (u32)risc6_in[off];
+}
+
+static u32 in16(u32 off) {
+    return in8(off) | (in8(off + 1u) << 8);
+}
+
+static u32 in32(u32 off) {
+    return in16(off) | (in16(off + 2u) << 16);
+}
+
+static u32 str_at(u32 off, const char *s) {
+    u32 i = 0;
+    while (s[i] != '\0') {
+        if (in8(off + i) != (u32)(u8)s[i]) {
+            return 0u;
+        }
+        i++;
+    }
+    return in8(off + i) == 0u ? 1u : 0u;
+}
+
+static void zero_mem(u32 n) {
+    u32 i = 0;
+    while (i < n) {
+        risc6_mem[i] = 0u;
+        i++;
+    }
+}
+
+static u32 load_fail(const char *why) {
+    diag_str("\nrisc6: load failed: ");
+    diag_str(why);
+    diag_str("\n");
+    g_rc = RISC6_RC_LOAD;
+    return 0u;
+}
+
+static u32 find_gp(u32 symoff, u32 symsize, u32 stroff) {
+    u32 n = symsize / 16u;
+    u32 i = 0;
+    while (i < n) {
+        u32 base = symoff + i * 16u;
+        u32 name = in32(base) + stroff;
+        u32 val = in32(base + 4u);
+        if (str_at(name, "__global_pointer$") != 0u) {
+            return val;
+        }
+        i++;
+    }
+    return 0u;
+}
+
+static u32 load_elf(u32 len) {
+    u32 phoff = 0;
+    u32 phentsize = 0;
+    u32 phnum = 0;
+    u32 entry = 0;
+    u32 lo = 0xFFFFFFFFu;
+    u32 hi = 0u;
+    u32 stack_top = 0u;
+    u32 size = 0u;
+    u32 i = 0;
+    u32 gp = 0u;
+
+    if (len < 52u) {
+        return load_fail("too short");
+    }
+    if (in8(0u) != 0x7Fu || in8(1u) != 0x45u || in8(2u) != 0x4Cu || in8(3u) != 0x46u) {
+        return load_fail("not an ELF");
+    }
+    if (in8(4u) != 1u) {
+        return load_fail("not ELF32");
+    }
+    if (in8(5u) != 1u) {
+        return load_fail("not little-endian");
+    }
+    if (in16(18u) != 243u) {
+        return load_fail("not EM_RISCV");
+    }
+    if (in16(16u) != 2u) {
+        return load_fail("not ET_EXEC");
+    }
+    entry = in32(24u);
+    phoff = in32(28u);
+    phentsize = in16(42u);
+    phnum = in16(44u);
+    if (phnum == 0u || phentsize < 32u) {
+        return load_fail("no program headers");
+    }
+    if (phoff + phnum * phentsize > len) {
+        return load_fail("program headers beyond file");
+    }
+
+    i = 0;
+    while (i < phnum) {
+        u32 p = phoff + i * phentsize;
+        if (in32(p) == 1u) {               /* PT_LOAD */
+            u32 va = in32(p + 8u);
+            u32 memsz = in32(p + 20u);
+            if (in32(p + 4u) + in32(p + 16u) > len) {
+                return load_fail("segment beyond file");
+            }
+            if (memsz != 0u) {
+                if (va < lo) {
+                    lo = va;
+                }
+                if (va + memsz > hi) {
+                    hi = va + memsz;
+                }
+            }
+        } else if (in32(p) == 3u) {         /* PT_INTERP */
+            return load_fail("dynamic ELF (PT_INTERP)");
+        }
+        i++;
+    }
+    if (hi <= lo) {
+        return load_fail("no loadable segment");
+    }
+
+    g_base = lo & 0xFFFFF000u;
+    stack_top = ((hi + 0xFFFu) & 0xFFFFF000u) + RISC6_STACK_GAP + RISC6_STACK_SIZE;
+    size = stack_top - g_base;
+    if (size > RISC6_MEM_SIZE) {
+        return load_fail("image + stack exceeds RISC6_MEM_SIZE");
+    }
+    g_size = size;
+    zero_mem(size);
+
+    i = 0;
+    while (i < phnum) {
+        u32 p = phoff + i * phentsize;
+        if (in32(p) == 1u) {
+            u32 off = in32(p + 4u);
+            u32 va = in32(p + 8u);
+            u32 filesz = in32(p + 16u);
+            u32 dst = va - g_base;
+            u32 k = 0;
+            while (k < filesz) {
+                risc6_mem[dst + k] = risc6_in[off + k];
+                k++;
+            }
+        }
+        i++;
+    }
+
+    /* gp：链接器松弛会发 gp 相对访问 */
+    {
+        u32 shoff = in32(32u);
+        u32 shentsize = in16(46u);
+        u32 shnum = in16(48u);
+        if (shoff != 0u && shnum != 0u && shentsize >= 40u
+            && shoff + shnum * shentsize <= len) {
+            u32 k = 0;
+            while (k < shnum) {
+                u32 s = shoff + k * shentsize;
+                if (in32(s + 4u) == 2u) {          /* SHT_SYMTAB */
+                    u32 stroff = in32(shoff + in32(s + 24u) * shentsize + 16u);
+                    gp = find_gp(in32(s + 16u), in32(s + 20u), stroff);
+                    break;
+                }
+                k++;
+            }
+        }
+    }
+
+    g_x[0] = 0u;
+    g_x[2] = (stack_top - 16u) & 0xFFFFFFF0u;
+    g_x[3] = gp;
+    g_x[10] = 0u;
+    g_x[11] = 0u;
+    g_pc = entry;
+    g_brk = (hi + 3u) & 0xFFFFFFFCu;
+    g_brk_max = (g_base + g_size) - 4096u;
+    if (g_trace != 0u) {
+        diag_str("risc6: base=0x");
+        diag_hex(g_base);
+        diag_str(" size=0x");
+        diag_hex(g_size);
+        diag_str(" entry=0x");
+        diag_hex(entry);
+        diag_str(" gp=0x");
+        diag_hex(gp);
+        diag_str(" sp=0x");
+        diag_hex(g_x[2]);
+        diag_str("\n");
+    }
+    return 1u;
+}
+
+/* ==================================================================== */
+/* 入口                                                                 */
+/* ==================================================================== */
+
+void risc6_set_limit(u64 max_insns) {
+    if (max_insns != 0ull) {
+        g_limit = max_insns;
+    }
+}
+
+void risc6_set_trace(u32 on) {
+    g_trace = (on != 0u) ? 1u : 0u;
+}
+
+int risc6_run(u32 in_len) {
+    u32 i = 0;
+
+    /* 复位 */
+    i = 0;
+    while (i < 32u) {
+        g_x[i] = 0u;
+        i++;
+    }
+    g_pc = 0u;
+    g_base = 0u;
+    g_size = 0u;
+    g_brk = 0u;
+    g_brk_max = 0u;
+    g_insns = 0ull;
+    g_next_event = (u64)RISC6_SLICE;
+    g_stop = 0u;
+    g_rc = 0u;
+    g_reserved = 0u;
+    g_mode = 0u;
+    g_mstatus = 0u;
+    g_mie = 0u;
+    g_mip = 0u;
+    g_mtvec = 0u;
+    g_mepc = 0u;
+    g_mcause = 0u;
+    g_mtval = 0u;
+    g_mscratch = 0u;
+    g_unknown_n = 0u;
+    risc6_out_len = 0u;
+    risc6_diag_len = 0u;
+    risc6_stat_insns = 0ull;
+
+    if (in_len > RISC6_IN_MAX) {
+        diag_str("\nrisc6: input too large\n");
+        return RISC6_RC_LOAD;
+    }
+    g_in_len = in_len;
+    if (load_elf(in_len) == 0u) {
+        risc6_stat_insns = 0ull;
+        return (int)g_rc;
+    }
+
+    while (g_stop == 0u) {
+        if (g_insns >= g_limit) {
+            diag_str("\nrisc6: instruction budget exhausted (limit=");
+            diag_dec(g_limit);
+            diag_str(") pc=0x");
+            diag_hex(g_pc);
+            diag_str("\n");
+            g_rc = RISC6_RC_BUDGET;
+            break;
+        }
+        if (g_mode == 1u && g_insns >= g_next_event) {
+            tick_event();
+            continue;
+        }
+        step();
+        g_insns = g_insns + 1ull;
+    }
+
+    risc6_stat_insns = g_insns;
+    return (int)g_rc;
+}
