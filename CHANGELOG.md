@@ -2,6 +2,12 @@
 
 格式：Keep a Changelog 风格；版本号遵循语义化版本，发布 tag 为 `vX.Y.Z`。
 
+## [Unreleased]
+
+### 变更
+
+- **构建系统**：`Makefile` 迁移为模块化 `CMakeLists.txt` + `cmake/*.cmake`（toolchain / build / targets 三模块）。c6 经其 CMake 包（`find_package(c6)`）、pkgconf（`c6.pc`）或源码树（`C6_ROOT`，等价于旧 Makefile 的 `C6_ROOT`）三种方式定位，优先用 cmake / pkgconf 提供的接口。原有 `make` / `make wasm` / `check` / `selfcheck` / `bare` / `harts` / `run` / `stats` 对应 `cmake --build build [--target <name>]`，并登记为 CTest 用例。
+
 ## [0.2.0] — 2026-11-13
 
 ### 新增
