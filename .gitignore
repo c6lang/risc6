@@ -1,1 +1,4 @@
 build/
+build-pkg/
+packages/
+_CPack_Packages/

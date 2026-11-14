@@ -1,6 +1,6 @@
 # risc6 —— 用 c6 写的 RV32IMAC 模拟器（native + wasm32）
 
-> 版本 **0.1.0** · [CHANGELOG](CHANGELOG.md) · Apache-2.0 · `risc6 --version`
+> 版本 **0.2.0** · [CHANGELOG](CHANGELOG.md) · Apache-2.0 · `risc6 --version`
 
 一个**机器**模拟器，不是宿主模拟器：它模拟 RISC-V RV32IMAC 的 `pc`/寄存器/内存，
 因此能在**指令边界**注入定时器中断——被模拟的内核真的跑在陷阱帧上，而宿主
@@ -53,7 +53,7 @@ port/host_wasm.c    wasm 宿主（导出：喂 ELF、取输出、取退出码）
 tools/run-wasm.mjs  node 运行器
 tools/diff-qemu.sh  与 qemu-riscv32 对拍
 tests/              RV32 用例（C 写，clang 编成 rv32 ELF）
-docs/               设计文档 + 任务板；随包装到 /usr/share/doc/c6/docs/
+docs/               设计文档 + 任务板；随包装到 /usr/share/doc/risc6/docs/
 ```
 
 ## 依赖
@@ -90,6 +90,29 @@ docs/               设计文档 + 任务板；随包装到 /usr/share/doc/c6/do
 | `make clean` | `cmake --build build --target clean-all`（清掉整个 `build/`） |
 
 c6 经其 CMake 包（`find_package(c6)`）、pkgconf（`c6.pc`）或源码树（`-DC6_ROOT=...`，等价于旧 `C6_ROOT`）三种方式定位，优先用 cmake / pkgconf 提供的接口。
+
+## 打包（deb / rpm / tar.gz）
+
+构建系统复用同一套 `install()` 清单产出包，安装布局：
+
+| 路径 | 内容 |
+|---|---|
+| `bin/risc6` | native 模拟器 |
+| `share/risc6/risc6.wasm` | wasm32 模块 |
+| `share/risc6/run-wasm.mjs` | 跑 wasm 的 node runner |
+| `share/doc/risc6/` | README / CHANGELOG / docs/ |
+| `share/doc/risc6/copyright` | Apache-2.0 许可（Debian 惯例） |
+| `share/licenses/risc6/LICENSE` | Apache-2.0 许可（RPM 惯例） |
+
+本地打包：先构建两个产物再 `cpack`
+
+```sh
+cmake -S . -B build-pkg -DCMAKE_INSTALL_PREFIX=/usr
+cmake --build build-pkg --target risc6 risc6-wasm
+cpack --config build-pkg/CPackConfig.cmake -G DEB    -B packages   # 同理 RPM / TGZ
+```
+
+GitHub Actions 在 push / PR / `v*` tag 上自动测试并产出三种包，tag 时发布到 Release。
 
 ## 状态
 

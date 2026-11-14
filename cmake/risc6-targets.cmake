@@ -72,10 +72,6 @@ add_custom_target(clean-all
   COMMAND ${CMAKE_COMMAND} -E rm -rf ${BUILD_DIR}
   COMMENT "删除整个构建目录（含 out/ 等脚本产物），等价于旧 make clean")
 
-# ---- 安装（可选；与 Makefile 未提供 install 不同，这里给出最小安装）----
-install(PROGRAMS ${BUILD_DIR}/risc6 DESTINATION bin OPTIONAL)
-install(FILES ${BUILD_DIR}/risc6.wasm DESTINATION share/risc6 OPTIONAL)
-
 # ---- CTest：把对拍与自检登记为用例，便于 `ctest --test-dir build` --------
 if(BUILD_TESTING)
   add_test(NAME risc6-check
