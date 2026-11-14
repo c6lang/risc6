@@ -1,0 +1,143 @@
+name: build, test and package
+
+on:
+  push:
+    branches: [main, master]
+    tags: ['v*']
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CMAKE_INSTALL_PREFIX: /usr
+  C6_REPO: c6lang/c6
+
+jobs:
+  # -------------------------------------------------------------------------
+  # 安装 c6（下载最新 release 的 deb 包，不再源码编译）→ 构建并测试 risc6
+  # （ctest + check/selfcheck/bare/harts/run/run-wasm）
+  # -------------------------------------------------------------------------
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+
+      - name: Install tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            cmake clang lld nodejs qemu-user
+
+      - name: Install c6 from release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download --repo "${{ env.C6_REPO }}" --latest \
+            --pattern '*amd64.deb' --dir /tmp/c6rel
+          sudo dpkg -i /tmp/c6rel/*.deb || sudo apt-get install -f -y
+          c6 --version
+
+      - name: Configure risc6
+        run: cmake -S . -B build -DCMAKE_INSTALL_PREFIX=/usr -DBUILD_TESTING=ON
+
+      - name: Build risc6
+        # CTest 不会自动构建非 ALL 的 target，这里先把 ctest / 各 check 依赖的产物建齐。
+        run: cmake --build build --target risc6 risc6-wasm risc6-tests risc6-bare-tests --parallel "$(nproc)"
+
+      - name: CTest
+        run: ctest --test-dir build -R risc6 --output-on-failure
+
+      - name: Functional checks
+        run: |
+          cmake --build build --target check
+          cmake --build build --target selfcheck
+          cmake --build build --target run
+          cmake --build build --target run-wasm
+          cmake --build build --target bare
+          cmake --build build --target harts
+
+  # -------------------------------------------------------------------------
+  # 打包：TGZ / DEB / RPM，复用同一份 install() 清单；tag 时由 release 发布。
+  # 同样先安装 c6 的发布包（find_package(c6) 命中）。
+  # -------------------------------------------------------------------------
+  package:
+    needs: [test]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+
+      - name: Install tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            cmake clang lld nodejs qemu-user dpkg-dev rpm
+
+      - name: Install c6 from release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download --repo "${{ env.C6_REPO }}" --latest \
+            --pattern '*amd64.deb' --dir /tmp/c6rel
+          sudo dpkg -i /tmp/c6rel/*.deb || sudo apt-get install -f -y
+          c6 --version
+
+      - name: Configure risc6
+        run: cmake -S . -B build-pkg -DCMAKE_INSTALL_PREFIX=/usr -DBUILD_TESTING=OFF
+
+      - name: Build risc6 (native + wasm)
+        run: cmake --build build-pkg --target risc6 risc6-wasm --parallel "$(nproc)"
+
+      - name: Package metadata
+        id: meta
+        run: echo "release=${GITHUB_RUN_NUMBER}.$(git rev-parse --short=7 HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Package (TGZ / DEB / RPM)
+        run: |
+          mkdir -p packages
+          for g in TGZ DEB RPM; do
+            cpack --config build-pkg/CPackConfig.cmake -G "$g" -B packages
+          done
+          rm -rf packages/_CPack_Packages
+
+      - name: Inspect package
+        run: |
+          ls -lh packages/
+          tar tzf packages/*.tar.gz  | grep -q 'usr/bin/risc6'
+          dpkg-deb --contents packages/*.deb | grep -q 'usr/bin/risc6'
+          rpm -qlp packages/*.rpm | grep -q 'usr/bin/risc6'
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: packages
+          path: packages/*
+          if-no-files-found: error
+
+  # -------------------------------------------------------------------------
+  # 发布：仅在 v* tag 上，把三种包 + 校验和发到 GitHub Release
+  # -------------------------------------------------------------------------
+  release:
+    if: ${{ startsWith(github.ref, 'refs/tags/v') }}
+    needs: [package]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with: { name: packages, path: dist }
+
+      - name: Checksums
+        run: cd dist && sha256sum * > SHA256SUMS
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true
