@@ -12,7 +12,7 @@
 
 ### 变更
 
-- **打包与发布**：新增 `cmake/risc6-install.cmake`（FHS 安装布局：bin/risc6、share/risc6/{risc6.wasm,run-wasm.mjs}、share/doc/risc6/{README,CHANGELOG,docs/}、Debian copyright、RPM license）与 `cmake/risc6-packaging.cmake`（CPack 出 TGZ/DEB/RPM，含 libc6 依赖、架构映射与版本自 git tag）。新增 `.github/workflows/ci.yml`：构建 c6 → 构建并测试 risc6（ctest + check/selfcheck/bare/harts/run/run-wasm）→ 打包三种产物，tag 时发 GitHub Release。README/CHANGELOG 同步版本与安装路径。
+- **打包与发布**：新增 `cmake/risc6-install.cmake`（FHS 安装布局：bin/risc6、share/risc6/{risc6.wasm,run-wasm.mjs}、share/doc/risc6/{README,CHANGELOG,docs/}、Debian copyright、RPM license）与 `cmake/risc6-packaging.cmake`（CPack 出 TGZ/DEB/RPM，含 libc6 依赖、架构映射与版本自 git tag）。新增 `.github/workflows/ci.yml`：下载 c6 最新发布包（deb）安装 → 构建并测试 risc6（ctest + check/selfcheck/bare/harts/run/run-wasm）→ 打包三种产物，tag 时发 GitHub Release。README/CHANGELOG 同步版本与安装路径。
 
 ## [0.2.0] — 2026-11-13
 

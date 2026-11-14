@@ -21,7 +21,8 @@ env:
 
 jobs:
   # -------------------------------------------------------------------------
-  # 构建 c6 → 构建并测试 risc6（ctest + check/selfcheck/bare/harts/run/run-wasm）
+  # 安装 c6（下载最新 release 的 deb 包，不再源码编译）→ 构建并测试 risc6
+  # （ctest + check/selfcheck/bare/harts/run/run-wasm）
   # -------------------------------------------------------------------------
   test:
     runs-on: ubuntu-24.04
@@ -33,16 +34,16 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            cmake make gcc binutils pkgconf texinfo perl \
-            clang lld nodejs qemu-user
+            cmake clang lld nodejs qemu-user
 
-      - name: Build & install c6
+      - name: Install c6 from release
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          git clone --depth 1 "https://github.com/${{ env.C6_REPO }}" c6-src
-          cmake -S c6-src -B /tmp/c6b \
-            -DCMAKE_INSTALL_PREFIX=/usr -DCMAKE_INSTALL_LIBDIR=lib -DBUILD_TESTING=OFF
-          cmake --build /tmp/c6b --parallel "$(nproc)"
-          sudo cmake --install /tmp/c6b
+          gh release download --repo "${{ env.C6_REPO }}" --latest \
+            --pattern '*amd64.deb' --dir /tmp/c6rel
+          sudo dpkg -i /tmp/c6rel/*.deb || sudo apt-get install -f -y
+          c6 --version
 
       - name: Configure risc6
         run: cmake -S . -B build -DCMAKE_INSTALL_PREFIX=/usr -DBUILD_TESTING=ON
@@ -64,7 +65,8 @@ jobs:
           cmake --build build --target harts
 
   # -------------------------------------------------------------------------
-  # 打包：TGZ / DEB / RPM，复用同一份 install() 清单；tag 时由 release 发布
+  # 打包：TGZ / DEB / RPM，复用同一份 install() 清单；tag 时由 release 发布。
+  # 同样先安装 c6 的发布包（find_package(c6) 命中）。
   # -------------------------------------------------------------------------
   package:
     needs: [test]
@@ -77,16 +79,16 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            cmake make gcc binutils pkgconf texinfo perl \
-            clang lld nodejs qemu-user dpkg-dev rpm
+            cmake clang lld nodejs qemu-user dpkg-dev rpm
 
-      - name: Build & install c6
+      - name: Install c6 from release
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          git clone --depth 1 "https://github.com/${{ env.C6_REPO }}" c6-src
-          cmake -S c6-src -B /tmp/c6b \
-            -DCMAKE_INSTALL_PREFIX=/usr -DCMAKE_INSTALL_LIBDIR=lib -DBUILD_TESTING=OFF
-          cmake --build /tmp/c6b --parallel "$(nproc)"
-          sudo cmake --install /tmp/c6b
+          gh release download --repo "${{ env.C6_REPO }}" --latest \
+            --pattern '*amd64.deb' --dir /tmp/c6rel
+          sudo dpkg -i /tmp/c6rel/*.deb || sudo apt-get install -f -y
+          c6 --version
 
       - name: Configure risc6
         run: cmake -S . -B build-pkg -DCMAKE_INSTALL_PREFIX=/usr -DBUILD_TESTING=OFF
