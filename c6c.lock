@@ -1,0 +1,38 @@
+{
+  "name": "risc6",
+  "version": "0.2.0",
+  "kind": "app",
+  "out": "build/risc6",
+  "include": [
+    ".",
+    "include"
+  ],
+  "flags": [
+  ],
+  "link_flags": [
+  ],
+  "dev_flags": [
+  ],
+  "release_flags": [
+  ],
+  "pkg_formats": [
+    "tgz"
+  ],
+  "pkg_files": [
+    "build/risc6:bin/risc6",
+    "README.md:share/doc/risc6/README.md",
+    "CHANGELOG.md:share/doc/risc6/CHANGELOG.md",
+    "LICENSE:share/licenses/risc6/LICENSE",
+    "docs/design.md:share/doc/risc6/docs/design.md",
+    "docs/todo.md:share/doc/risc6/docs/todo.md"
+  ],
+  "fw_formats": [
+  ],
+  "sources": [
+    ["include/risc6.h", 3555, "800fa6e7"],
+    ["include/risc6_core.h", 2524, "8bea33a4"],
+    ["port/host_native.c", 4679, "be8b4042"],
+    ["src/rv32.c6", 31500, "62f59202"],
+    ["src/sys.c6", 10785, "f5fb94fa"]
+  ]
+}

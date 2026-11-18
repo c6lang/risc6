@@ -1,1 +1,6 @@
 build/
+# 构建/打包产物
+build-pkg/
+packages/
+# c6c 工程管理的运行时互斥锁（fcntl 记录锁锚文件，非 c6c.lock 内容锁）
+.c6c.lock

@@ -1,0 +1,46 @@
+# risc6 的 c6c 工程管理清单（build / run / check / test / clean / list / env / doctor / lock / workspace）
+#
+# 构建说明：
+#   rv32.c6 调用了 sys.c6 中的 static load_elf；c6c 默认按文件切换 TU，
+#   该符号跨 TU 不可见。开启 merge_c6: true 后，c6c build 会先把 sources 中
+#   的多个 .c6 合并成单个临时 TU（build/risc6.merged.c6）再编译，.c 宿主源
+#   原位保留，因此 `c6c build` / `c6c run` 可直接产出并运行 build/risc6。
+#   Makefile 是 wasm32 的唯一入口，也是 native 的官方双 TU 构建（c6 --emit-llvm + clang）；
+#   c6c 的 merge 单 TU 构建是等价替代，二者共用 build/risc6 产物路径，勿并行运行。
+
+name: risc6
+version: 0.2.0
+kind: app
+out: build/risc6
+merge_c6: true
+# 合并顺序 = sources 顺序；c6 单遍编译要求定义先于调用，
+# 故定义 load_elf 的 sys.c6 排在调用它的 rv32.c6 之前。
+sources:
+  - src/sys.c6
+  - src/rv32.c6
+  - port/host_native.c
+include:
+  - .
+  - include
+flags:
+# native 还需上游 c6 的 libtcc1.a（Makefile 用 -L$(C6B) -ltcc1）；c6c 不消费此项。
+dev_flags:
+release_flags:
+
+pkg_name: risc6
+pkg_desc: risc6 - RV32IMAC machine emulator written in c6 (native + wasm32)
+pkg_license: Apache-2.0
+# 发行版打包：DESTDIR="${pkgdir}" c6c install --prefix=/usr
+destdir: pkg
+prefix: /usr
+pkg_formats:
+  - tgz
+pkg_files:
+  - build/risc6:bin/risc6
+  - README.md:share/doc/risc6/README.md
+  - CHANGELOG.md:share/doc/risc6/CHANGELOG.md
+  - LICENSE:share/licenses/risc6/LICENSE
+  - docs/design.md:share/doc/risc6/docs/design.md
+  - docs/todo.md:share/doc/risc6/docs/todo.md
+  # wasm 产物由 `make wasm` 生成；需要发布时手动补一行：
+  #   - build/risc6.wasm:share/risc6/risc6.wasm
